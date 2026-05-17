@@ -1,0 +1,31 @@
+{
+  "context": {
+    "title": "Production mix optimization",
+    "domain": "manufacturing",
+    "decision_maker": "Plant manager",
+    "objective_direction": "maximize",
+    "unit": "USD/week",
+    "time_horizon": "1 week",
+    "description": "Factory produces A and B with labor and machine constraints."
+  },
+  "problem_type": "linear_programming",
+  "variables": [
+    { "name": "x_A", "description": "Units of product A", "lower_bound": 0 },
+    { "name": "x_B", "description": "Units of product B", "lower_bound": 0 }
+  ],
+  "objective": {
+    "sense": "maximize",
+    "coefficients": { "x_A": 40, "x_B": 30 },
+    "expression": "40*x_A + 30*x_B"
+  },
+  "constraints": [
+    { "name": "labor_hours", "coefficients": { "x_A": 2, "x_B": 1 }, "operator": "<=", "rhs": 100, "resource": "labor" },
+    { "name": "machine_hours", "coefficients": { "x_A": 1, "x_B": 2 }, "operator": "<=", "rhs": 80, "resource": "machine" },
+    { "name": "demand_A", "coefficients": { "x_A": 1 }, "operator": "<=", "rhs": 40, "resource": "demand" },
+    { "name": "demand_B", "coefficients": { "x_B": 1 }, "operator": "<=", "rhs": 50, "resource": "demand" }
+  ],
+  "assumptions": [
+    "Profit per unit is deterministic for the planning week.",
+    "Products are divisible in this LP MVP; integer lot sizing requires MILP."
+  ]
+}

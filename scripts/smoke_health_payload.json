@@ -1,0 +1,34 @@
+{
+  "question": "Co nen dung ibuprofen khi dang dau dau va dang uong aspirin hang ngay khong?",
+  "domain": "health",
+  "objective": "Giam dau nhung tranh tuong tac thuoc va tac dung phu nghiem trong",
+  "context": "Nguoi dung chua cung cap tuoi, lieu aspirin, benh nen, tien su da day, than, gan",
+  "riskTolerance": 0.2,
+  "timeHorizon": "24 gio",
+  "model": "qwen3:8b",
+  "webRealtime": false,
+  "options": [
+    {
+      "id": "take",
+      "name": "Dung ibuprofen",
+      "cost": 5,
+      "reversibility": 0.4,
+      "scenarios": [
+        { "name": "Giam dau nhanh", "probability": 0.45, "utility": 70 },
+        { "name": "Khong hieu qua", "probability": 0.25, "utility": 25 },
+        { "name": "Tuong tac/tac dung phu", "probability": 0.3, "utility": -40 }
+      ]
+    },
+    {
+      "id": "ask",
+      "name": "Hoi bac si/duoc si truoc",
+      "cost": 10,
+      "reversibility": 0.9,
+      "scenarios": [
+        { "name": "Tim duoc lua chon an toan", "probability": 0.55, "utility": 75 },
+        { "name": "Cham giam dau", "probability": 0.3, "utility": 35 },
+        { "name": "Can di kham", "probability": 0.15, "utility": 60 }
+      ]
+    }
+  ]
+}
