@@ -129,6 +129,62 @@ def parse_resource_allocation_dp_text(text: str) -> dict[str, Any] | None:
     }
 
 
+def parse_shortest_path_text(text: str) -> dict[str, Any] | None:
+    lowered = text.lower()
+    if "dijkstra" not in lowered and "đường đi ngắn" not in lowered and "shortest path" not in lowered:
+        return None
+
+    cleaned_text = re.sub(r"[*_`]", "", lowered)
+    source_match = re.search(r"(?:từ|from)\s+(?:(?:đỉnh|điểm|node|vertex)\s+)?([a-z0-9]+)", cleaned_text)
+    target_match = re.search(r"(?:đến|to)\s+(?:(?:đỉnh|điểm|node|vertex)\s+)?([a-z0-9]+)", cleaned_text)
+    
+    source = None
+    if source_match:
+        source = source_match.group(1).upper() if source_match.group(1).isalpha() else source_match.group(1)
+        
+    target = None
+    if target_match:
+        target = target_match.group(1).upper() if target_match.group(1).isalpha() else target_match.group(1)
+
+    is_undirected = "vô hướng" in lowered or "undirected" in lowered
+
+    edges = []
+    for line in text.splitlines():
+        if "---" in line:
+            continue
+        m = re.search(r"(?:\|\s*)?([a-zA-Z0-9]+)\s*(?:-|->|—)\s*([a-zA-Z0-9]+)\s*(?:\||:)\s*(\d+(?:\.\d+)?)\s*(?:\|)?", line)
+        if m:
+            u, v, w = m.groups()
+            u_name = u.upper() if u.isalpha() else u
+            v_name = v.upper() if v.isalpha() else v
+            directed = False if is_undirected else ("->" in line)
+            edges.append({"from": u_name, "to": v_name, "cost": float(w), "directed": directed})
+
+    if not source or not target or not edges:
+        return None
+
+    return {
+        "context": {
+            "title": "Shortest Path Problem",
+            "domain": "network",
+            "decision_maker": "planner",
+            "objective_direction": "minimize",
+            "unit": "distance",
+            "description": text[:3000],
+        },
+        "problem_type": "shortest_path",
+        "graph": {
+            "source": source,
+            "target": target,
+            "edges": edges,
+        },
+        "assumptions": [
+            "Chi phí các cạnh lấy theo trọng số cho trước.",
+            "Thuật toán tìm đường đi ngắn nhất (ví dụ: Dijkstra)."
+        ],
+    }
+
+
 # ── LLM-based General LP Parser ──────────────────────────────────────────
 
 
@@ -263,6 +319,7 @@ def solve_text_problem(text: str) -> dict[str, Any]:
         or parse_resource_allocation_dp_text(text)
         or parse_power_transportation_text(text)
         or parse_cargo_lp_text(text)
+        or parse_shortest_path_text(text)
     )
     if parsed:
         # For raw matrix LP (cargo etc), solve directly via LP solver

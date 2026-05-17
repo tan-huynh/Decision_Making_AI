@@ -48,6 +48,7 @@ type EngineeringResult = {
       status?: string;
       solver?: string;
       objective_value?: number;
+      path?: string[];
       allocations?: Array<{ from: string; to: string; amount: number; unit_cost: number }>;
       allocation?: Array<{ stage: number; tons?: number; resource?: number; profit: number }>;
       dp_tables?: Array<{ stage: number; values: Record<string, number>; choice: Record<string, number> }>;
@@ -249,6 +250,37 @@ function EngineeringSolutionView({ data }: { data: EngineeringResult }) {
 
         <h3>6. Giả định</h3>
         <ul className="solver-list">{data.problem.assumptions?.map((item) => <li key={item}>{item}</li>)}</ul>
+      </div>
+    );
+  }
+
+  if (data.solved?.problem_type === "shortest_path") {
+    return (
+      <div className="solver-result">
+        <div className="solver-head">
+          <div>
+            <h2>Lời giải chi tiết</h2>
+            <p>Shortest Path / Dijkstra Algorithm</p>
+          </div>
+          <strong>{result.objective_value?.toFixed(0)}</strong>
+        </div>
+
+        <h3>1. Bài toán</h3>
+        <p>Tìm đường đi ngắn nhất từ đỉnh <code>{graph?.source}</code> đến đỉnh <code>{graph?.target}</code>.</p>
+
+        <h3>2. Kết quả</h3>
+        <p><strong>Đường đi:</strong> {result.path?.join(" → ")}</p>
+        <p><strong>Tổng chi phí:</strong> {result.objective_value}</p>
+
+        <h3>3. Khuyến nghị</h3>
+        <p>{result.recommendation}</p>
+        <p>{data.solved?.recommendation_explanation}</p>
+        {data.problem?.assumptions?.length ? (
+          <>
+            <h3>4. Giả định</h3>
+            <ul className="solver-list">{data.problem.assumptions.map((item) => <li key={item}>{item}</li>)}</ul>
+          </>
+        ) : null}
       </div>
     );
   }

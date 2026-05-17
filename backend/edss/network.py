@@ -7,6 +7,7 @@ pure-Python Dijkstra and least-cost heuristic.
 from __future__ import annotations
 
 import heapq
+from itertools import islice
 from typing import Any
 
 try:
@@ -42,11 +43,40 @@ def _shortest_path_nx(source: str, target: str, edges: list[dict[str, Any]]) -> 
     try:
         path = nx.shortest_path(G, source, target, weight="weight")
         cost = nx.shortest_path_length(G, source, target, weight="weight")
+        
+        try:
+            k_paths = list(islice(nx.shortest_simple_paths(G, source, target, weight="weight"), 5))
+            alternatives = []
+            for p in k_paths:
+                c = nx.path_weight(G, p, weight="weight")
+                alternatives.append({"path": " → ".join(p), "cost": c})
+        except Exception:
+            alternatives = []
+
+        md = f"### Báo cáo kết quả thuật toán Dijkstra\n\n"
+        md += f"**Mục tiêu:** Tìm đường đi ngắn nhất từ đỉnh `{source}` đến đỉnh `{target}`.\n\n"
+        
+        if alternatives:
+            md += "#### So sánh các lộ trình khả thi (Top 5)\n\n"
+            md += "Để đảm bảo tính tối ưu, thuật toán đã duyệt qua các đường đi có thể và đưa ra bảng so sánh sau:\n\n"
+            md += "| Xếp hạng | Đường đi | Tổng chi phí | Chênh lệch so với tối ưu |\n"
+            md += "|:---:|---|:---:|:---:|\n"
+            for i, alt in enumerate(alternatives):
+                diff = alt['cost'] - cost
+                diff_str = f"+{diff:.0f}" if diff > 0 else "Tối ưu nhất"
+                md += f"| #{i+1} | {alt['path']} | {alt['cost']:.0f} | {diff_str} |\n"
+            md += "\n> **Kết luận:** Thuật toán xác định lộ trình hạng #1 là đường đi ngắn nhất tuyệt đối, loại trừ hoàn toàn các rủi ro chọn nhầm đường vòng.\n"
+        else:
+            md += f"**Đường đi ngắn nhất:** {' → '.join(path)} (Chi phí: {cost})\n"
+            md += "Không tìm thấy đường đi thay thế nào khác trong đồ thị.\n"
+
         return {
             "status": "optimal",
             "solver": "networkx_dijkstra",
             "objective_value": round(cost, 6),
             "path": path,
+            "alternatives": alternatives,
+            "markdown_report": md,
             "recommendation": f"Đường đi ngắn nhất: {' → '.join(path)}, chi phí = {cost:.0f}.",
         }
     except nx.NetworkXNoPath:
@@ -69,9 +99,15 @@ def _shortest_path_pure(source: str, target: str, edges: list[dict[str, Any]]) -
             continue
         seen.add(node)
         if node == target:
+            md = f"### Báo cáo kết quả thuật toán Dijkstra\n\n"
+            md += f"**Mục tiêu:** Tìm đường đi ngắn nhất từ đỉnh `{source}` đến đỉnh `{target}`.\n\n"
+            md += f"**Đường đi ngắn nhất:** {' → '.join(path)}\n\n"
+            md += f"**Tổng chi phí:** {cost:.0f}\n\n"
+            md += "> Thuật toán Pure Dijkstra đã duyệt và xác nhận đây là đường đi ngắn nhất."
             return {
                 "status": "optimal", "solver": "dijkstra",
                 "objective_value": cost, "path": path,
+                "markdown_report": md,
                 "recommendation": f"Đường đi ngắn nhất: {' → '.join(path)}, chi phí = {cost:.0f}.",
             }
         for nxt, weight in adj.get(node, []):
