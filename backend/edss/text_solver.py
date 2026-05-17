@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 from .router import solve_problem
+from .cargo_lp_parser import parse_cargo_lp_text
 
 
 def parse_probability_tree_text(text: str) -> dict[str, Any] | None:
@@ -97,7 +99,6 @@ def parse_resource_allocation_dp_text(text: str) -> dict[str, Any] | None:
         if "sản xuất (tấn)" in normalized or "san xuat (tan)" in normalized:
             continue
         numbers = [float(value) for value in re.findall(r"(?<!\^)(?<!\d)(\d+(?:\.\d+)?)", line)]
-        # Drop exponent/unit markers from markdown such as 10^5 if they appear before the table values.
         if len(numbers) >= 4:
             profit_rows.append(numbers[-4:])
     if len(profit_rows) > 1 and profit_rows[0] == [0.0, 1.0, 2.0, 3.0]:
@@ -128,18 +129,195 @@ def parse_resource_allocation_dp_text(text: str) -> dict[str, Any] | None:
     }
 
 
+# ── LLM-based General LP Parser ──────────────────────────────────────────
+
+
+LP_SYSTEM_PROMPT = """You are a mathematical modeler. Extract the LP from the problem text.
+Return ONLY valid JSON with this EXACT structure (no markdown, no explanation):
+{
+  "title": "short title",
+  "sense": "maximize" or "minimize",
+  "n_index_groups": [{"name": "group name", "items": ["item1", "item2"]}],
+  "variable_description": "what x_ij represents",
+  "variables": [{"name": "x11", "group_i": 0, "group_j": 0}],
+  "objective_coefficients": [510, 510, 510, 680, 680, 680],
+  "constraints_leq": [
+    {"name": "constraint name", "coefficients": [1,0,0,1,0,0], "rhs": 100}
+  ],
+  "constraints_eq": [
+    {"name": "balance", "coefficients": [15,-9,0,15,-9,0], "rhs": 0}
+  ],
+  "assumptions": ["assumption 1"]
+}
+Variables must be listed in order: x11,x12,...,x1m,x21,x22,...,xnm.
+ALL coefficient arrays must have length = number of variables.
+Do NOT include any text outside the JSON."""
+
+
+async def parse_lp_with_llm(text: str, model: str = "qwen3:8b") -> dict[str, Any] | None:
+    """Use Ollama LLM to extract LP structure from arbitrary text."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                "http://127.0.0.1:11434/api/chat",
+                json={
+                    "model": model,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": LP_SYSTEM_PROMPT},
+                        {"role": "user", "content": text[:4000]},
+                    ],
+                    "options": {"temperature": 0.1, "num_predict": 3000},
+                },
+            )
+            response.raise_for_status()
+            content = response.json().get("message", {}).get("content", "")
+    except Exception:
+        return None
+
+    # Extract JSON from response
+    # Remove think tags if present
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    json_match = re.search(r"\{[\s\S]*\}", content)
+    if not json_match:
+        return None
+
+    try:
+        data = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        return None
+
+    # Validate and convert to raw LP format
+    obj_c = data.get("objective_coefficients", [])
+    if not obj_c:
+        return None
+
+    n = len(obj_c)
+    var_names = [v["name"] for v in data.get("variables", [])]
+    if len(var_names) != n:
+        var_names = [f"x{i+1}" for i in range(n)]
+
+    A_ub, b_ub, ub_names = [], [], []
+    for con in data.get("constraints_leq", []):
+        coeffs = con.get("coefficients", [])
+        if len(coeffs) == n:
+            A_ub.append([float(c) for c in coeffs])
+            b_ub.append(float(con["rhs"]))
+            ub_names.append(con.get("name", ""))
+
+    A_eq, b_eq, eq_names = [], [], []
+    for con in data.get("constraints_eq", []):
+        coeffs = con.get("coefficients", [])
+        if len(coeffs) == n:
+            A_eq.append([float(c) for c in coeffs])
+            b_eq.append(float(con["rhs"]))
+            eq_names.append(con.get("name", ""))
+
+    # Build formulation text
+    sense = data.get("sense", "maximize")
+    formulation = f"{sense} Z = c·x\n"
+    formulation += f"Biến: {data.get('variable_description', ', '.join(var_names))}\n"
+    formulation += f"Số biến: {n}, Bất đẳng thức: {len(A_ub)}, Đẳng thức: {len(A_eq)}"
+
+    steps = [
+        f"1. LLM nhận diện bài toán: {data.get('title', 'LP')}",
+        f"2. Trích xuất {n} biến quyết định",
+        f"3. Xây dựng {len(A_ub)} ràng buộc ≤ và {len(A_eq)} ràng buộc =",
+        f"4. Giải bằng scipy HiGHS solver",
+    ]
+
+    return {
+        "context": {
+            "title": data.get("title", "Linear Programming"),
+            "domain": "optimization",
+            "decision_maker": "analyst",
+            "objective_direction": sense,
+            "unit": "$",
+            "description": text[:3000],
+        },
+        "problem_type": "linear_programming",
+        "c": [float(c) for c in obj_c],
+        "sense": sense,
+        "A_ub": A_ub if A_ub else None,
+        "b_ub": b_ub if b_ub else None,
+        "A_eq": A_eq if A_eq else None,
+        "b_eq": b_eq if b_eq else None,
+        "bounds": [[0, None]] * n,
+        "variable_names": var_names,
+        "constraint_names_ub": ub_names,
+        "constraint_names_eq": eq_names,
+        "formulation": formulation,
+        "steps": steps,
+        "assumptions": data.get("assumptions", ["LP solved with scipy HiGHS."]),
+    }
+
+
+# ── Main Entry Point ─────────────────────────────────────────────────────
+
+
 def solve_text_problem(text: str) -> dict[str, Any]:
-    parsed = parse_probability_tree_text(text) or parse_resource_allocation_dp_text(text) or parse_power_transportation_text(text)
-    if not parsed:
+    """Solve text problem: try specific parsers first, then cargo LP, then return pending for LLM."""
+    parsed = (
+        parse_probability_tree_text(text)
+        or parse_resource_allocation_dp_text(text)
+        or parse_power_transportation_text(text)
+        or parse_cargo_lp_text(text)
+    )
+    if parsed:
+        # For raw matrix LP (cargo etc), solve directly via LP solver
+        if "c" in parsed:
+            from .linear_programming import solve_lp
+            result = solve_lp(parsed)
+            return {
+                "status": "solved",
+                "problem": parsed,
+                "solved": {
+                    "problem_type": "linear_programming",
+                    "result": result,
+                    "recommendation_explanation": result.get("recommendation", ""),
+                },
+            }
+        solved = solve_problem(parsed)
+        return {"status": "solved", "problem": parsed, "solved": solved}
+
+    # Return pending — frontend will call async LLM endpoint
+    return {
+        "status": "pending_llm",
+        "message": "Đang phân tích bài toán bằng AI...",
+        "text": text,
+    }
+
+
+async def solve_text_problem_async(text: str, model: str = "qwen3:8b") -> dict[str, Any]:
+    """Async version: tries specific parsers, then LLM-based extraction."""
+    # Try sync parsers first
+    sync_result = solve_text_problem(text)
+    if sync_result["status"] == "solved":
+        return sync_result
+
+    # Try LLM-based general LP parser
+    parsed = await parse_lp_with_llm(text, model=model)
+    if parsed and "c" in parsed:
+        from .linear_programming import solve_lp
+        result = solve_lp(parsed)
         return {
-            "status": "needs_clarification",
-            "message": "Không đủ dữ liệu để tự tạo mô hình. EDSS hiện cần nhận diện được transportation, dynamic programming resource allocation, hoặc probability tree.",
-            "questions": [
-                "Nếu là transportation: supply, demand và ma trận chi phí là gì?",
-                "Nếu là quy hoạch động: tổng tài nguyên cần phân bổ là bao nhiêu?",
-                "Bảng lợi nhuận/chi phí theo từng giai đoạn và từng mức tài nguyên là gì?",
-                "Nếu là xác suất/cây biến cố: xác suất mỗi nhánh và số lần thử là gì?",
-            ],
+            "status": "solved",
+            "problem": parsed,
+            "solved": {
+                "problem_type": "linear_programming",
+                "result": result,
+                "recommendation_explanation": result.get("recommendation", ""),
+            },
         }
-    solved = solve_problem(parsed)
-    return {"status": "solved", "problem": parsed, "solved": solved}
+
+    return {
+        "status": "needs_clarification",
+        "message": "Không thể trích xuất mô hình toán học từ bài toán. Hãy cung cấp rõ: biến quyết định, hàm mục tiêu, và các ràng buộc.",
+        "questions": [
+            "Biến quyết định là gì? (ví dụ: x1 = sản lượng sản phẩm A)",
+            "Hàm mục tiêu: maximize hay minimize cái gì?",
+            "Liệt kê các ràng buộc với hệ số cụ thể.",
+        ],
+    }
+

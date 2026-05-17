@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, BrainCircuit, Download, ImageDown, Maximize2, Minimize2, Plus, RefreshCw, Save, Sparkles, Trash2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import DecisionChart from "@/components/DecisionChart";
 import { defaultDecision } from "@/lib/defaultDecision";
 import type { AnalysisResult, DecisionInput, DecisionOption } from "@/lib/types";
@@ -65,6 +67,7 @@ type EngineeringResult = {
         reduced_costs?: Record<string, number>;
       };
       recommendation?: string;
+      markdown_report?: string;
     };
     recommendation_explanation?: string;
   };
@@ -88,6 +91,16 @@ function EngineeringSolutionView({ data }: { data: EngineeringResult }) {
         <h2>Engineering Solver Result</h2>
         <p>{data.message || "Không đủ dữ liệu để khuyến nghị chắc chắn."}</p>
         {data.questions?.length ? data.questions.map((question) => <p key={question}>- {question}</p>) : null}
+      </div>
+    );
+  }
+
+  if (result.markdown_report) {
+    return (
+      <div className="md-view" style={{ marginTop: 16 }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {result.markdown_report}
+        </ReactMarkdown>
       </div>
     );
   }
@@ -586,6 +599,10 @@ export default function Home() {
             Ollama
           </span>
         </div>
+
+        <a href="/edss" className="button" style={{ margin: "0 16px 8px", textAlign: "center", textDecoration: "none", background: "linear-gradient(135deg, #3b82f6, #6366f1)", color: "white", borderColor: "transparent" }}>
+          🧠 EDSS Dashboard — Engineering Solver
+        </a>
 
         <section>
           <h2>Bài toán</h2>

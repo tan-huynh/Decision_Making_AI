@@ -521,6 +521,37 @@ textarea {
   color: var(--accent-strong);
 }
 
+/* ── Markdown View ────────────────────────────────────────────── */
+
+.md-view {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.md-view h1 { font-size: 20px; margin: 0 0 8px; color: var(--accent-strong); }
+.md-view h2 { font-size: 16px; margin: 20px 0 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.md-view h3 { font-size: 14px; margin: 14px 0 6px; }
+.md-view h4 { font-size: 13px; margin: 10px 0 4px; color: var(--muted); }
+.md-view p { margin: 6px 0; }
+.md-view strong { color: var(--ink); font-weight: bold; }
+.md-view ul, .md-view ol { margin: 8px 0; padding-left: 20px; }
+.md-view li { margin: 4px 0; }
+.md-view code { font-family: monospace; font-size: 12px; padding: 2px 4px; background: #f0f0f0; border-radius: 4px; color: var(--blue); }
+.md-view pre { padding: 12px; background: #fbfaf7; border-radius: 6px; border-left: 3px solid var(--blue); overflow-x: auto; margin: 10px 0; }
+.md-view pre code { padding: 0; background: none; color: var(--ink); font-size: 12px; }
+.md-view table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+.md-view th { text-align: left; padding: 8px 10px; font-weight: 600; background: #f4f1ea; border-bottom: 2px solid var(--line); }
+.md-view td { padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.md-view tr:hover td { background: #fbfaf7; }
+.md-view blockquote { border-left: 3px solid var(--amber); margin: 10px 0; padding: 6px 12px; background: #fffbeb; color: var(--amber); }
+.md-view hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
+
 @media (max-width: 920px) {
   .shell {
     grid-template-columns: 1fr;

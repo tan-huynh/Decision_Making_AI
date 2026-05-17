@@ -21,7 +21,7 @@ from edss.report import render_markdown_report
 from edss.risk import value_at_risk
 from edss.router import build_mathematical_model, solve_problem
 from edss.sensitivity_engine import sensitivity_analysis, what_if_scenario
-from edss.text_solver import solve_text_problem
+from edss.text_solver import solve_text_problem, solve_text_problem_async
 from edss.voi_engine import compute_evpi, compute_evi, compute_voi_from_problem
 from knowledge_base import BOOK_PRINCIPLES, decision_system_prompt
 from model_generator import generate_decision_model
@@ -112,7 +112,7 @@ async def edss_solve_text(payload: dict[str, str]) -> dict[str, Any]:
     text = payload.get("text", "")
     if len(text.strip()) < 4:
         raise HTTPException(status_code=400, detail="Missing problem text.")
-    return solve_text_problem(text)
+    return await solve_text_problem_async(text)
 
 
 @app.post("/edss/solve/lp")

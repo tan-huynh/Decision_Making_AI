@@ -23,6 +23,10 @@ EPS = 1e-8
 
 def solve_lp(problem: dict[str, Any]) -> dict[str, Any]:
     """Solve an LP problem. Prefers scipy HiGHS; falls back to vertex enum."""
+    # Check for raw matrix form first
+    if "c" in problem and ("A_ub" in problem or "A_eq" in problem):
+        return solve_lp_raw(problem)
+
     variables = problem.get("variables", [])
     if not variables:
         raise ValueError("LP requires decision variables.")
@@ -31,6 +35,266 @@ def solve_lp(problem: dict[str, Any]) -> dict[str, Any]:
     if HAS_SCIPY:
         return _solve_with_scipy(problem, names, variables)
     return _solve_vertex_enum(problem, names, variables)
+
+
+def solve_lp_raw(problem: dict[str, Any]) -> dict[str, Any]:
+    """Solve LP from raw scipy matrix format.
+
+    Expected keys:
+        c: list[float] — objective coefficients
+        sense: "maximize" | "minimize"
+        A_ub, b_ub: inequality constraints (A_ub @ x <= b_ub)
+        A_eq, b_eq: equality constraints (A_eq @ x = b_eq)
+        bounds: list of [lo, hi] or None
+        variable_names: list[str] — names for display
+        constraint_names_ub: list[str] — names for ≤ constraints
+        constraint_names_eq: list[str] — names for = constraints
+        formulation: str — math model text for display
+        steps: list[str] — solution steps for display
+    """
+    if not HAS_SCIPY:
+        raise ValueError("scipy required for raw matrix LP.")
+
+    c_raw = [float(v) for v in problem["c"]]
+    sense = problem.get("sense", "maximize")
+    n = len(c_raw)
+
+    c_min = [-v for v in c_raw] if sense == "maximize" else c_raw[:]
+
+    A_ub = problem.get("A_ub")
+    b_ub = problem.get("b_ub")
+    A_eq = problem.get("A_eq")
+    b_eq = problem.get("b_eq")
+
+    raw_bounds = problem.get("bounds")
+    if raw_bounds:
+        bounds = [(b[0] if b[0] is not None else 0, b[1] if len(b) > 1 and b[1] is not None else None) for b in raw_bounds]
+    else:
+        bounds = [(0, None)] * n
+
+    result = scipy_linprog(
+        c_min,
+        A_ub=A_ub if A_ub else None,
+        b_ub=b_ub if b_ub else None,
+        A_eq=A_eq if A_eq else None,
+        b_eq=b_eq if b_eq else None,
+        bounds=bounds,
+        method="highs",
+    )
+
+    if not result.success:
+        return {"status": result.message.lower().split()[0] if result.message else "infeasible",
+                "message": result.message, "solver": "scipy_highs"}
+
+    x = result.x
+    obj_value = float(-result.fun if sense == "maximize" else result.fun)
+    var_names = problem.get("variable_names", [f"x{i}" for i in range(n)])
+
+    # Build solution dict (only non-zero)
+    solution = {}
+    for i, name in enumerate(var_names):
+        if abs(x[i]) > 1e-6:
+            solution[name] = round(x[i], 6)
+
+    # Constraint analysis
+    binding_ub = []
+    slacks_ub = {}
+    shadow_prices = {}
+    ub_names = problem.get("constraint_names_ub", [f"ub_{i}" for i in range(len(A_ub or []))])
+    if A_ub and b_ub:
+        for idx, (row, rhs) in enumerate(zip(A_ub, b_ub)):
+            lhs = sum(row[j] * x[j] for j in range(n))
+            slack = rhs - lhs
+            cname = ub_names[idx] if idx < len(ub_names) else f"ub_{idx}"
+            slacks_ub[cname] = round(slack, 6)
+            if abs(slack) <= 1e-5:
+                binding_ub.append(cname)
+            # Try to get shadow prices
+            if hasattr(result, "ineq_lin") and result.ineq_lin is not None:
+                try:
+                    dual = float(result.ineq_lin.marginals[idx])
+                    shadow_prices[cname] = round(-dual if sense == "maximize" else dual, 6)
+                except (IndexError, AttributeError, TypeError):
+                    pass
+
+    eq_names = problem.get("constraint_names_eq", [f"eq_{i}" for i in range(len(A_eq or []))])
+    if A_eq:
+        for idx, cname in enumerate(eq_names):
+            binding_ub.append(cname)
+
+    # Build detailed markdown report
+    md = _build_lp_markdown(
+        problem, var_names, x, obj_value, sense,
+        solution, slacks_ub, binding_ub, shadow_prices,
+        A_ub, b_ub, ub_names, A_eq, b_eq, eq_names, c_raw, n,
+    )
+
+    return {
+        "status": "optimal",
+        "solver": "scipy_highs",
+        "objective_value": round(obj_value, 6),
+        "solution": solution,
+        "all_values": {var_names[i]: round(x[i], 6) for i in range(n)},
+        "binding_constraints": binding_ub,
+        "slacks": slacks_ub,
+        "shadow_prices": shadow_prices,
+        "formulation": problem.get("formulation", ""),
+        "steps": problem.get("steps", []),
+        "summary_tables": problem.get("summary_tables", {}),
+        "assumptions": problem.get("assumptions", [
+            "LP solved with scipy HiGHS solver.",
+        ]),
+        "recommendation": f"Nghiệm tối ưu: Z* = {round(obj_value, 2)}",
+        "markdown_report": md,
+    }
+
+
+def _build_lp_markdown(
+    problem: dict, var_names: list, x, obj_value: float, sense: str,
+    solution: dict, slacks: dict, binding: list, shadow_prices: dict,
+    A_ub, b_ub, ub_names, A_eq, b_eq, eq_names, c_raw, n: int,
+) -> str:
+    """Generate a comprehensive markdown solution report."""
+    ctx = problem.get("context", {})
+    title = ctx.get("title", "Linear Programming Solution")
+    tables = problem.get("summary_tables", {})
+    formulation = problem.get("formulation", "")
+    steps = problem.get("steps", [])
+    assumptions = problem.get("assumptions", [])
+
+    lines: list[str] = []
+    lines.append(f"# {title}")
+    lines.append("")
+    lines.append(f"**Solver**: scipy HiGHS · **Status**: Optimal")
+    lines.append("")
+
+    # Section 1: Problem Summary
+    lines.append("## 1. Tóm tắt bài toán")
+    lines.append("")
+
+    # Input data tables
+    for tbl_name, rows in tables.items():
+        if not isinstance(rows, list) or not rows:
+            continue
+        if not isinstance(rows[0], dict):
+            continue
+        keys = list(rows[0].keys())
+        lines.append(f"**{tbl_name.replace('_', ' ').title()}:**")
+        lines.append("")
+        lines.append("| " + " | ".join(keys) + " |")
+        lines.append("| " + " | ".join("---:" for _ in keys) + " |")
+        for row in rows:
+            vals = [str(row.get(k, "")) for k in keys]
+            lines.append("| " + " | ".join(vals) + " |")
+        lines.append("")
+
+    # Section 2: Decision Variables
+    lines.append("## 2. Biến quyết định")
+    lines.append("")
+    lines.append(f"Tổng cộng **{n} biến**: " + ", ".join(var_names))
+    lines.append("")
+
+    # Section 3: Mathematical Formulation
+    lines.append("## 3. Mô hình toán học")
+    lines.append("")
+    if formulation:
+        lines.append("```")
+        lines.append(formulation)
+        lines.append("```")
+        lines.append("")
+
+    # Section 4: Steps
+    if steps:
+        lines.append("## 4. Các bước giải")
+        lines.append("")
+        for s in steps:
+            lines.append(f"- {s}")
+        lines.append("")
+
+    # Section 5: OPTIMAL SOLUTION
+    lines.append("## 5. ✅ Nghiệm tối ưu")
+    lines.append("")
+    lines.append(f"### **Z* = ${obj_value:,.2f}**")
+    lines.append("")
+
+    # Solution table (non-zero only)
+    if solution:
+        lines.append("| Biến | Giá trị (tấn) |")
+        lines.append("|---|---:|")
+        for name, val in solution.items():
+            lines.append(f"| {name} | {val:.4f} |")
+        lines.append("")
+
+    # Section 6: Detailed Calculation - verify Z*
+    lines.append("## 6. 📐 Kiểm tra phép tính")
+    lines.append("")
+    lines.append("### Tính Z* từ nghiệm:")
+    lines.append("")
+    obj_parts = []
+    total = 0.0
+    for name, val in solution.items():
+        idx = var_names.index(name) if name in var_names else -1
+        if idx >= 0:
+            coef = c_raw[idx]
+            contrib = coef * val
+            total += contrib
+            obj_parts.append(f"- {name}: {coef} × {val:.4f} = **{contrib:.2f}**")
+    for part in obj_parts:
+        lines.append(part)
+    lines.append(f"- **Tổng Z* = {total:.2f}** ✓")
+    lines.append("")
+
+    # Constraint verification
+    lines.append("### Kiểm tra ràng buộc:")
+    lines.append("")
+    if A_ub and b_ub:
+        lines.append("| Ràng buộc | LHS | Dấu | RHS | Slack | Status |")
+        lines.append("|---|---:|---|---:|---:|---|")
+        for idx, (row, rhs) in enumerate(zip(A_ub, b_ub)):
+            lhs = sum(row[j] * x[j] for j in range(n))
+            slack = rhs - lhs
+            cname = ub_names[idx] if idx < len(ub_names) else f"ub_{idx}"
+            status = "🔒 Binding" if abs(slack) < 1e-5 else "✓ OK"
+            lines.append(f"| {cname} | {lhs:.4f} | ≤ | {rhs:.1f} | {slack:.4f} | {status} |")
+        lines.append("")
+
+    if A_eq and b_eq:
+        lines.append("| Ràng buộc (=) | LHS | = | RHS | Status |")
+        lines.append("|---|---:|---|---:|---|")
+        for idx, (row, rhs) in enumerate(zip(A_eq, b_eq)):
+            lhs = sum(row[j] * x[j] for j in range(n))
+            diff = abs(lhs - rhs)
+            cname = eq_names[idx] if idx < len(eq_names) else f"eq_{idx}"
+            status = "✓ Thỏa" if diff < 1e-5 else f"✗ Sai ({diff:.6f})"
+            lines.append(f"| {cname} | {lhs:.4f} | = | {rhs:.1f} | {status} |")
+        lines.append("")
+
+    # Section 7: Binding constraints summary
+    if binding:
+        lines.append("## 7. 🔒 Ràng buộc chặt (Binding)")
+        lines.append("")
+        for b in binding:
+            lines.append(f"- **{b}**")
+        lines.append("")
+        if slacks:
+            slack_list = [(k, v) for k, v in slacks.items() if v > 1e-5]
+            if slack_list:
+                lines.append("### Ràng buộc không chặt (có dư):")
+                lines.append("")
+                for name, val in slack_list:
+                    lines.append(f"- {name}: dư **{val:.4f}**")
+                lines.append("")
+
+    # Section 8: Assumptions
+    if assumptions:
+        lines.append("## 8. ⚠️ Giả định")
+        lines.append("")
+        for a in assumptions:
+            if a:
+                lines.append(f"- {a}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # ── scipy HiGHS Solver ────────────────────────────────────────────────────
