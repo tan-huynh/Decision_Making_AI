@@ -21,11 +21,11 @@ def render_markdown_report(problem: dict[str, Any], solved: dict[str, Any]) -> s
 
     sections = [
         _section_header(ctx),
+        _section_classification(solved),
         _section_problem_statement(ctx),
         _section_decision_context(ctx),
         _section_data_inputs(problem),
         _section_assumptions(problem, model),
-        _section_classification(solved),
         _section_mathematical_model(model),
         _section_solver_selection(result),
         _section_solver_result(result),
@@ -109,18 +109,32 @@ def _section_assumptions(problem: dict[str, Any], model: dict[str, Any]) -> str:
 
 
 def _section_classification(solved: dict[str, Any]) -> str:
-    kind = solved.get("problem_type", "N/A")
-    labels = {
-        "linear_programming": "Linear Programming (Quy hoạch tuyến tính)",
-        "transportation": "Transportation Problem (Bài toán vận tải)",
-        "assignment": "Assignment Problem (Bài toán phân công)",
-        "shortest_path": "Shortest Path (Đường đi ngắn nhất)",
-        "dynamic_programming": "Dynamic Programming (Quy hoạch động)",
-        "decision_tree": "Decision Under Uncertainty (Quyết định dưới bất định)",
-        "simulation_risk": "Simulation / Monte Carlo",
-        "multi_objective": "Multi-Objective Decision (Nhiều mục tiêu)",
-    }
-    return f"## 5. Problem Classification\n\n**Type**: {labels.get(kind, kind)}"
+    gate = solved.get("recognition_gate", {})
+    primary_type = gate.get("recognized_problem_type", solved.get("problem_type", "N/A"))
+    secondary_type = gate.get("recognized_subtype", "")
+    confidence = gate.get("confidence", "N/A")
+    evidence = gate.get("evidence", [])
+    required_slots = gate.get("required_slots", [])
+    filled_slots = gate.get("filled_slots", [])
+    missing_slots = gate.get("missing_slots", [])
+    
+    evidence_str = "\n".join(f"  - {e}" for e in evidence) if evidence else "  - Không rõ"
+    required_str = ", ".join(required_slots) if required_slots else "Không có"
+    filled_str = ", ".join(filled_slots) if filled_slots else "Không có"
+    missing_str = ", ".join(missing_slots) if missing_slots else "None"
+    
+    lines = [
+        "## 1. Nhận dạng dạng toán",
+        "",
+        f"- **Dạng toán chính**: {primary_type}",
+        f"- **Dạng toán phụ**: {secondary_type}",
+        f"- **Mức tin cậy**: {confidence}",
+        "- **Dấu hiệu nhận dạng**:\n" + evidence_str,
+        f"- **Dữ liệu cần có**: {required_str}",
+        f"- **Dữ liệu đã có**: {filled_str}",
+        f"- **Dữ liệu còn thiếu nếu có**: {missing_str}"
+    ]
+    return "\n".join(lines)
 
 
 def _section_mathematical_model(model: dict[str, Any]) -> str:

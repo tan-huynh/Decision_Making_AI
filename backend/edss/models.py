@@ -9,7 +9,7 @@ class EDSSContext(BaseModel):
     title: str = Field(default="Engineering decision case", max_length=240)
     domain: str = Field(default="engineering", max_length=80)
     decision_maker: str = Field(default="engineer", max_length=120)
-    objective_direction: Literal["maximize", "minimize"] = "maximize"
+    objective_direction: str = Field(default="maximize", max_length=40)
     unit: str = Field(default="", max_length=80)
     time_horizon: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=5000)
@@ -18,14 +18,14 @@ class EDSSContext(BaseModel):
 class EDSSVariable(BaseModel):
     name: str
     description: str = ""
-    variable_type: Literal["continuous", "integer", "binary"] = "continuous"
+    variable_type: str = Field(default="continuous", max_length=40)
     lower_bound: float = 0
     upper_bound: float | None = None
     unit: str = ""
 
 
 class EDSSObjective(BaseModel):
-    sense: Literal["maximize", "minimize"] = "maximize"
+    sense: str = Field(default="maximize", max_length=40)
     coefficients: dict[str, float] = Field(default_factory=dict)
     constant: float = 0
     expression: str = ""
@@ -34,7 +34,7 @@ class EDSSObjective(BaseModel):
 class EDSSConstraint(BaseModel):
     name: str
     coefficients: dict[str, float]
-    operator: Literal["<=", ">=", "="] = "<="
+    operator: str = Field(default="<=", max_length=10)
     rhs: float
     resource: str = ""
     unit: str = ""
@@ -61,7 +61,7 @@ class EDSSPayoffCell(BaseModel):
 
 class EDSSDecisionNode(BaseModel):
     id: str
-    node_type: Literal["decision", "chance", "outcome"]
+    node_type: str = Field(default="chance", max_length=40)
     label: str
     value: float | None = None
     probability: float | None = None
@@ -83,9 +83,20 @@ class EDSSProblem(BaseModel):
     stages: list[dict[str, Any]] = Field(default_factory=list)
     objectives: list[dict[str, Any]] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+    probability_tree: dict[str, Any] | None = None
+    bayes: dict[str, Any] | None = None
+    independent_probabilities: list[float] | None = None
+    resource_allocation: dict[str, Any] | None = None
+    annual_demand: float | None = None
+    weekly_demand: float | None = None
+    order_cost: float | None = None
+    holding_cost: float | None = None
+    shortage_cost: float | None = None
+    purchase_cost: float | None = None
+    gross_profit_per_unit: float | None = None
+    lead_time: float | None = None
 
 
 class NaturalProblemRequest(BaseModel):
     description: str = Field(min_length=4, max_length=8000)
     domain: str = Field(default="engineering", max_length=80)
-

@@ -12,6 +12,8 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 MEMORY_FILE = DATA_DIR / "decision_memory.jsonl"
 PROFILE_FILE = DATA_DIR / "expert_profile.json"
 
+from edss.db import log_decision
+
 
 @dataclass
 class EngineProfile:
@@ -197,4 +199,12 @@ def learn_from_outcome(payload: dict[str, Any]) -> dict[str, Any]:
     save_profile(profile)
     with MEMORY_FILE.open("a", encoding="utf-8") as file:
         file.write(json.dumps({**payload, "profile_after": profile.to_dict()}, ensure_ascii=False) + "\n")
+        
+    # Log to SQLite Database for EDSS Phase 2 Learning
+    decision_data = payload.get("decision", {})
+    problem_text = decision_data.get("question", "")
+    problem_type = decision_data.get("domain", "general")
+    solver_used = "decision_engine"
+    log_decision(problem_text, problem_type, solver_used, outcome)
+    
     return {"ok": True, "profile": profile.to_dict()}

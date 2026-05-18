@@ -6,6 +6,7 @@ vertex enumeration for small problems when scipy is unavailable.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from itertools import combinations
 from typing import Any
 
@@ -83,8 +84,15 @@ def solve_lp_raw(problem: dict[str, Any]) -> dict[str, Any]:
     )
 
     if not result.success:
-        return {"status": result.message.lower().split()[0] if result.message else "infeasible",
-                "message": result.message, "solver": "scipy_highs"}
+        status = _linprog_failure_status(result)
+        return {
+            "status": status,
+            "message": result.message,
+            "solver": "scipy_highs",
+            "formulation": problem.get("formulation", ""),
+            "recommendation": _failure_recommendation(status),
+            "markdown_report": _build_lp_failure_markdown(problem, status, result.message),
+        }
 
     x = result.x
     obj_value = float(-result.fun if sense == "maximize" else result.fun)
@@ -149,6 +157,64 @@ def solve_lp_raw(problem: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _linprog_failure_status(result: Any) -> str:
+    status_code = getattr(result, "status", None)
+    message = (getattr(result, "message", "") or "").lower()
+    if status_code == 2 or "infeasible" in message:
+        return "infeasible"
+    if status_code == 3 or "unbounded" in message:
+        return "unbounded"
+    if status_code == 4:
+        return "solver_error"
+    return "failed"
+
+
+def _failure_recommendation(status: str) -> str:
+    if status == "infeasible":
+        return "Không có nghiệm khả thi; cần kiểm tra các ràng buộc mâu thuẫn hoặc RHS quá chặt."
+    if status == "unbounded":
+        return "Bài toán không bị chặn; cần thêm ràng buộc giới hạn biến/tài nguyên để có nghiệm tối ưu hữu hạn."
+    return "Solver không tìm được nghiệm; cần kiểm tra mô hình và dữ liệu đầu vào."
+
+
+def _build_lp_failure_markdown(problem: dict[str, Any], status: str, message: str | None) -> str:
+    ctx = problem.get("context", {})
+    title = ctx.get("title", "Linear Programming Solution")
+    formulation = problem.get("formulation", "")
+    lines = [f"# {title}", "", f"**Solver**: scipy HiGHS · **Status**: {status}", ""]
+    lines.append("## 1. Mô hình đã parse")
+    lines.append("")
+    if formulation:
+        lines.append("```text")
+        lines.append(formulation)
+        lines.append("```")
+        lines.append("")
+    lines.append("## 2. Kết luận solver")
+    lines.append("")
+    if status == "infeasible":
+        lines.append("Bài toán **không có nghiệm khả thi**. Nghĩa là không tồn tại bộ giá trị biến nào thỏa tất cả ràng buộc cùng lúc.")
+        lines.append("")
+        lines.append("Cách kiểm tra tiếp theo:")
+        lines.append("- Xem có ràng buộc mâu thuẫn như `x <= a` và `x >= b` với `b > a` không.")
+        lines.append("- Kiểm tra dấu `<=`, `>=`, `=` có bị nhập sai không.")
+        lines.append("- Kiểm tra đơn vị đo/RHS của từng ràng buộc.")
+    elif status == "unbounded":
+        lines.append("Bài toán **không bị chặn**. Hàm mục tiêu có thể cải thiện vô hạn theo một hướng khả thi, nên không tồn tại nghiệm tối ưu hữu hạn.")
+        lines.append("")
+        lines.append("Cách khắc phục:")
+        lines.append("- Thêm giới hạn tài nguyên/công suất/ngân sách cho các biến đang tăng vô hạn.")
+        lines.append("- Kiểm tra có thiếu ràng buộc upper bound không.")
+        lines.append("- Kiểm tra objective direction maximize/minimize có đúng không.")
+    else:
+        lines.append("Solver không trả về nghiệm tối ưu. Cần kiểm tra mô hình đầu vào hoặc thử solver khác.")
+    if message:
+        lines.append("")
+        lines.append("## 3. Thông báo kỹ thuật")
+        lines.append("")
+        lines.append(f"```text\n{message}\n```")
+    return "\n".join(lines)
+
+
 def _build_lp_markdown(
     problem: dict, var_names: list, x, obj_value: float, sense: str,
     solution: dict, slacks: dict, binding: list, shadow_prices: dict,
@@ -202,6 +268,11 @@ def _build_lp_markdown(
         lines.append(formulation)
         lines.append("```")
         lines.append("")
+
+    if n == 2 and A_ub and b_ub and not A_eq:
+        lines.extend(_build_two_variable_geometric_solution(var_names, A_ub, b_ub, ub_names, c_raw))
+    else:
+        lines.extend(_build_general_lp_solution_notes(var_names, A_ub, b_ub, ub_names, A_eq, b_eq, eq_names, c_raw, sense))
 
     # Section 4: Steps
     if steps:
@@ -270,19 +341,26 @@ def _build_lp_markdown(
         lines.append("")
 
     # Section 7: Binding constraints summary
-    if binding:
-        lines.append("## 7. 🔒 Ràng buộc chặt (Binding)")
+    if binding or slacks:
+        lines.append("## 7. 🔒 Phân tích Ràng buộc (Constraint Analysis)")
         lines.append("")
-        for b in binding:
-            lines.append(f"- **{b}**")
+        lines.append("> **💡 Giải thích thuật ngữ:**")
+        lines.append("> - **Ràng buộc chặt (Binding):** Là những nguồn tài nguyên đã bị sử dụng cạn kiệt (hoặc đạt mức tối thiểu bắt buộc) đến tận giới hạn (Slack = 0). Đây là các **nút thắt cổ chai** của hệ thống, mọi sự nới lỏng ở đây sẽ trực tiếp cải thiện lợi nhuận/chi phí.")
+        lines.append("> - **Ràng buộc không chặt (Non-binding):** Là những nguồn tài nguyên vẫn còn dư thừa (Slack > 0). Việc nạp thêm tài nguyên này lúc này cũng vô ích vì nó không phải là nút thắt.")
         lines.append("")
+
+        if binding:
+            lines.append("### 🔴 Các Ràng buộc chặt (Nút thắt):")
+            for b in binding:
+                lines.append(f"- **{b}** (đã cạn kiệt)")
+            lines.append("")
+
         if slacks:
             slack_list = [(k, v) for k, v in slacks.items() if v > 1e-5]
             if slack_list:
-                lines.append("### Ràng buộc không chặt (có dư):")
-                lines.append("")
+                lines.append("### 🟢 Các Ràng buộc không chặt (Còn dư):")
                 for name, val in slack_list:
-                    lines.append(f"- {name}: dư **{val:.4f}**")
+                    lines.append(f"- **{name}**: dư thừa **{val:.4f}** đơn vị")
                 lines.append("")
 
     # Section 8: Assumptions
@@ -295,6 +373,213 @@ def _build_lp_markdown(
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _build_general_lp_solution_notes(
+    var_names: list[str],
+    a_ub,
+    b_ub,
+    ub_names: list[str],
+    a_eq,
+    b_eq,
+    eq_names: list[str],
+    c_raw: list[float],
+    sense: str,
+) -> list[str]:
+    lines: list[str] = []
+    lines.append("## Phần giải tổng quát cho LP nhiều biến")
+    lines.append("")
+    lines.append("Bài toán được đưa về dạng ma trận để solver HiGHS giải bằng các biến không âm.")
+    lines.append("")
+    lines.append("### 1. Dạng ma trận")
+    lines.append("")
+    lines.append(f"- Objective direction: **{sense}**")
+    lines.append(f"- Vector biến: `x = ({', '.join(var_names)})`")
+    lines.append(f"- Vector hệ số mục tiêu: `c = ({', '.join(_fmt_fraction(v) for v in c_raw)})`")
+    lines.append("")
+    if a_ub and b_ub:
+        lines.append("Ràng buộc bất đẳng thức `A_ub x <= b_ub`:")
+        lines.append("")
+        lines.append("| Tên | Hệ số | RHS |")
+        lines.append("|---|---|---:|")
+        for idx, (row, rhs) in enumerate(zip(a_ub, b_ub)):
+            name = ub_names[idx] if idx < len(ub_names) and ub_names[idx] else f"ub_{idx + 1}"
+            lines.append(f"| {name} | ({', '.join(_fmt_fraction(v) for v in row)}) | {_fmt_fraction(rhs)} |")
+        lines.append("")
+    if a_eq and b_eq:
+        lines.append("Ràng buộc đẳng thức `A_eq x = b_eq`:")
+        lines.append("")
+        lines.append("| Tên | Hệ số | RHS |")
+        lines.append("|---|---|---:|")
+        for idx, (row, rhs) in enumerate(zip(a_eq, b_eq)):
+            name = eq_names[idx] if idx < len(eq_names) and eq_names[idx] else f"eq_{idx + 1}"
+            lines.append(f"| {name} | ({', '.join(_fmt_fraction(v) for v in row)}) | {_fmt_fraction(rhs)} |")
+        lines.append("")
+    lines.append("### 2. Diễn giải")
+    lines.append("")
+    lines.append("- Ràng buộc `=` luôn là ràng buộc chặt nếu nghiệm khả thi.")
+    lines.append("- Với `<=`, slack = RHS - LHS; slack bằng 0 nghĩa là binding.")
+    lines.append("- Với bài toán maximize, shadow price dương cho biết objective tăng bao nhiêu khi nới RHS thêm 1 đơn vị, trong vùng nhạy cục bộ.")
+    lines.append("")
+    return lines
+
+
+def _fmt_fraction(value: float, max_denominator: int = 1000) -> str:
+    if abs(value) < 1e-10:
+        return "0"
+    fraction = Fraction(float(value)).limit_denominator(max_denominator)
+    if fraction.denominator == 1:
+        return str(fraction.numerator)
+    return f"{fraction.numerator}/{fraction.denominator}"
+
+
+def _fmt_fraction_decimal(value: float) -> str:
+    return f"{_fmt_fraction(value)} ≈ {value:.4f}"
+
+
+def _fmt_point(point: tuple[float, float]) -> str:
+    return f"({_fmt_fraction(point[0])}, {_fmt_fraction(point[1])})"
+
+
+def _line_expr(row: list[float], names: list[str]) -> str:
+    parts = []
+    for coef, name in zip(row, names):
+        if abs(coef) < 1e-10:
+            continue
+        sign = "-" if coef < 0 else "+"
+        magnitude = abs(coef)
+        term = name if abs(magnitude - 1.0) < 1e-10 else f"{_fmt_fraction(magnitude)}{name}"
+        parts.append((sign, term))
+    if not parts:
+        return "0"
+    first_sign, first_term = parts[0]
+    expr = f"-{first_term}" if first_sign == "-" else first_term
+    for sign, term in parts[1:]:
+        expr += f" {sign} {term}"
+    return expr
+
+
+def _intersect_two_lines(row_a: list[float], rhs_a: float, row_b: list[float], rhs_b: float) -> tuple[float, float] | None:
+    det = row_a[0] * row_b[1] - row_a[1] * row_b[0]
+    if abs(det) < 1e-10:
+        return None
+    x_val = (rhs_a * row_b[1] - row_a[1] * rhs_b) / det
+    y_val = (row_a[0] * rhs_b - rhs_a * row_b[0]) / det
+    return (x_val, y_val)
+
+
+def _is_feasible_2d(point: tuple[float, float], a_ub: list[list[float]], b_ub: list[float]) -> bool:
+    if point[0] < -1e-8 or point[1] < -1e-8:
+        return False
+    return all(row[0] * point[0] + row[1] * point[1] <= rhs + 1e-8 for row, rhs in zip(a_ub, b_ub))
+
+
+def _build_two_variable_geometric_solution(
+    var_names: list[str],
+    a_ub: list[list[float]],
+    b_ub: list[float],
+    ub_names: list[str],
+    c_raw: list[float],
+) -> list[str]:
+    lines: list[str] = []
+    x_name, y_name = var_names[0], var_names[1]
+
+    lines.append("## Phần giải chi tiết bằng phương pháp hình học")
+    lines.append("")
+    lines.append("Vì bài toán có 2 biến quyết định và các ràng buộc tuyến tính, ta có thể tìm nghiệm tối ưu bằng cách xét các đỉnh của miền nghiệm.")
+    lines.append("")
+
+    lines.append("### 1. Xác định các đường biên")
+    lines.append("")
+    for idx, (row, rhs) in enumerate(zip(a_ub, b_ub)):
+        cname = ub_names[idx] if idx < len(ub_names) and ub_names[idx] else f"c{idx + 1}"
+        expr = _line_expr(row, var_names)
+        lines.append(f"Từ ràng buộc **{cname}**:")
+        lines.append("")
+        lines.append(f"```text\n{expr} = {_fmt_fraction(rhs)}\n```")
+        if abs(row[0]) > 1e-10:
+            x_intercept = rhs / row[0]
+            lines.append(f"- Nếu {y_name} = 0: {expr} = {_fmt_fraction(rhs)} ⇒ {x_name} = {_fmt_fraction_decimal(x_intercept)}")
+        else:
+            x_intercept = None
+            lines.append(f"- Đường biên song song trục {x_name}, không có giao điểm {y_name}=0 hữu hạn.")
+        if abs(row[1]) > 1e-10:
+            y_intercept = rhs / row[1]
+            lines.append(f"- Nếu {x_name} = 0: {expr} = {_fmt_fraction(rhs)} ⇒ {y_name} = {_fmt_fraction_decimal(y_intercept)}")
+        else:
+            y_intercept = None
+            lines.append(f"- Đường biên song song trục {y_name}, không có giao điểm {x_name}=0 hữu hạn.")
+        if x_intercept is not None and y_intercept is not None:
+            lines.append(f"- Đường biên đi qua `{(_fmt_point((x_intercept, 0)))}` và `{(_fmt_point((0, y_intercept)))}`.")
+        lines.append("")
+
+    candidates: list[tuple[float, float]] = [(0.0, 0.0)]
+    for row, rhs in zip(a_ub, b_ub):
+        if abs(row[0]) > 1e-10:
+            candidates.append((rhs / row[0], 0.0))
+        if abs(row[1]) > 1e-10:
+            candidates.append((0.0, rhs / row[1]))
+    for (row_a, rhs_a), (row_b, rhs_b) in combinations(list(zip(a_ub, b_ub)), 2):
+        point = _intersect_two_lines(row_a, rhs_a, row_b, rhs_b)
+        if point is not None:
+            candidates.append(point)
+
+    feasible_vertices: list[tuple[float, float]] = []
+    for point in candidates:
+        if not _is_feasible_2d(point, a_ub, b_ub):
+            continue
+        if not any(abs(point[0] - existing[0]) < 1e-7 and abs(point[1] - existing[1]) < 1e-7 for existing in feasible_vertices):
+            feasible_vertices.append(point)
+    feasible_vertices.sort(key=lambda item: (item[0], item[1]))
+
+    lines.append("### 2. Tìm các đỉnh của miền nghiệm")
+    lines.append("")
+    lines.append(f"Vì {x_name} ≥ 0, {y_name} ≥ 0, miền nghiệm nằm trong góc phần tư thứ nhất.")
+    lines.append("")
+    lines.append("Các đỉnh khả thi là:")
+    lines.append("")
+    for point in feasible_vertices:
+        lines.append(f"- `{_fmt_point(point)}`")
+    lines.append("")
+
+    if len(a_ub) >= 2:
+        point = _intersect_two_lines(a_ub[0], b_ub[0], a_ub[1], b_ub[1])
+        if point is not None:
+            lines.append("### 3. Tính giao điểm của hai đường ràng buộc chính")
+            lines.append("")
+            lines.append("Giải hệ:")
+            lines.append("")
+            lines.append("```text")
+            lines.append(f"{_line_expr(a_ub[0], var_names)} = {_fmt_fraction(b_ub[0])}")
+            lines.append(f"{_line_expr(a_ub[1], var_names)} = {_fmt_fraction(b_ub[1])}")
+            lines.append("```")
+            lines.append("")
+            lines.append(f"Kết quả giao điểm: `{_fmt_point(point)}` = `({_fmt_fraction_decimal(point[0])}, {_fmt_fraction_decimal(point[1])})`.")
+            lines.append("")
+
+    lines.append("### 4. Tính giá trị hàm mục tiêu tại các đỉnh")
+    lines.append("")
+    lines.append(f"Hàm mục tiêu: `Z = {_line_expr(c_raw, var_names)}`")
+    lines.append("")
+    lines.append("| Đỉnh | Giá trị Z |")
+    lines.append("|---|---:|")
+    best_point = None
+    best_value = float("-inf")
+    for point in feasible_vertices:
+        value = c_raw[0] * point[0] + c_raw[1] * point[1]
+        if value > best_value:
+            best_value = value
+            best_point = point
+        lines.append(f"| {_fmt_point(point)} | {_fmt_fraction(value)} ≈ {value:.4f} |")
+    lines.append("")
+    if best_point is not None:
+        lines.append("### 5. Đáp án cuối cùng theo phương pháp hình học")
+        lines.append("")
+        lines.append(f"- `{x_name}* = {_fmt_fraction(best_point[0])}`")
+        lines.append(f"- `{y_name}* = {_fmt_fraction(best_point[1])}`")
+        lines.append(f"- `Zmax = {_fmt_fraction(best_value)} ≈ {best_value:.4f}`")
+        lines.append("")
+    return lines
 
 
 # ── scipy HiGHS Solver ────────────────────────────────────────────────────

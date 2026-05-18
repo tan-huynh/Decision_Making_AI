@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, BrainCircuit, Download, ImageDown, Maximize2, Minimize2, Plus, RefreshCw, Save, Sparkles, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import mermaid from "mermaid";
 import DecisionChart from "@/components/DecisionChart";
 import { defaultDecision } from "@/lib/defaultDecision";
 import type { AnalysisResult, DecisionInput, DecisionOption } from "@/lib/types";
@@ -23,6 +24,11 @@ const emptyOption = (index: number): DecisionOption => ({
 type EngineeringResult = {
   status?: string;
   problem?: {
+    context?: {
+      title?: string;
+      domain?: string;
+      description?: string;
+    };
     problem_type?: string;
     resource_allocation?: {
       resource_name: string;
@@ -40,10 +46,26 @@ type EngineeringResult = {
       demands?: Record<string, number>;
       costs?: Record<string, Record<string, number>>;
     };
+    alternatives?: Array<{ name: string; description?: string }>;
+    states?: Array<{ name: string; probability: number }>;
+    payoff_matrix?: Array<{ alternative: string; state: string; payoff: number; cost?: number }>;
+    bayes?: Record<string, number | boolean>;
+    independent_probabilities?: number[];
     assumptions?: string[];
   };
   solved?: {
     problem_type?: string;
+    model?: {
+      formulation?: string;
+      missing_data?: string[];
+      assumptions?: string[];
+    };
+    validation?: {
+      is_valid?: boolean;
+      errors?: string[];
+      warnings?: string[];
+      info?: string[];
+    };
     result?: {
       status?: string;
       solver?: string;
@@ -74,311 +96,217 @@ type EngineeringResult = {
   };
   message?: string;
   questions?: string[];
+  recognition_gate?: {
+    recognized_problem_type?: string;
+    recognized_subtype?: string;
+    confidence?: number;
+    evidence?: string[];
+    required_slots?: string[];
+    filled_slots?: string[];
+    missing_slots?: string[];
+    decision_to_solve?: string;
+  };
 };
 
-function EngineeringSolutionView({ data }: { data: EngineeringResult }) {
-  const graph = data.problem?.graph;
-  const result = data.solved?.result;
-  const resourceAllocation = data.problem?.resource_allocation;
-  const allocations = result?.allocations || [];
-  const plants = Object.keys(graph?.supplies || {});
-  const cities = Object.keys(graph?.demands || {});
-  const allocationMap = new Map(allocations.map((item) => [`${item.from}->${item.to}`, item]));
-  const percent = (value?: number | null) => (value == null ? "N/A" : `${(value * 100).toFixed(2)}%`);
+type EngineeringHistoryItem = {
+  id: string;
+  title: string;
+  text: string;
+  result: EngineeringResult;
+  createdAt: string;
+  problemType?: string;
+};
 
-  if (data.status !== "solved" || !result) {
+const ENGINEERING_HISTORY_KEY = "edss_solver_history_v1";
+const MAX_ENGINEERING_HISTORY = 40;
+
+mermaid.initialize({ startOnLoad: false, theme: "default" });
+
+function jsonToMarkdown(data: Record<string, unknown>, depth = 0): string {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(data)) {
+    const label = key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    if (value === null || value === undefined) continue;
+
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      if (typeof value === "number" && !Number.isInteger(value)) {
+        lines.push(`**${label}**: ${Number(value).toFixed(4)}`);
+      } else {
+        lines.push(`**${label}**: ${value}`);
+      }
+    } else if (Array.isArray(value)) {
+      if (value.length === 0) continue;
+      if (typeof value[0] === "object" && value[0] !== null) {
+        const keys = Object.keys(value[0] as Record<string, unknown>);
+        lines.push("");
+        lines.push(`**${label}:**`);
+        lines.push("");
+        lines.push("| " + keys.map((k) => k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())).join(" | ") + " |");
+        lines.push("| " + keys.map(() => "---").join(" | ") + " |");
+        for (const row of value.slice(0, 30)) {
+          const r = row as Record<string, unknown>;
+          lines.push("| " + keys.map((k) => {
+            const v = r[k];
+            if (typeof v === "number") return Number.isInteger(v) ? String(v) : Number(v).toFixed(4);
+            return String(v ?? "");
+          }).join(" | ") + " |");
+        }
+        lines.push("");
+      } else if (typeof value[0] === "string") {
+        lines.push(`**${label}**:`);
+        for (const item of value) lines.push(`- ${item}`);
+      } else {
+        lines.push(`**${label}**: ${value.join(", ")}`);
+      }
+    } else if (typeof value === "object") {
+      if (depth < 2) {
+        lines.push("");
+        lines.push(`### ${label}`);
+        lines.push("");
+        lines.push(jsonToMarkdown(value as Record<string, unknown>, depth + 1));
+      } else {
+        lines.push(`**${label}**: \`${JSON.stringify(value)}\``);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function MermaidView({ chart }: { chart: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const id = `mermaid-${Math.random().toString(36).slice(2)}`;
+    mermaid
+      .render(id, chart)
+      .then(({ svg }) => {
+        if (!cancelled && ref.current) ref.current.innerHTML = svg;
+      })
+      .catch((error) => {
+        if (ref.current) {
+          ref.current.textContent = `Mermaid render error: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chart]);
+
+  return <div ref={ref} className="mermaid-wrapper" />;
+}
+
+function recognitionGateMarkdown(data: EngineeringResult): string {
+  const gate = data.recognition_gate;
+  if (!gate) return "";
+  const evidence = gate.evidence || [];
+  const required = gate.required_slots || [];
+  const filled = gate.filled_slots || [];
+  const missing = gate.missing_slots || [];
+  return [
+    "## 1. Nhận dạng dạng toán",
+    "",
+    `- **Dạng toán chính:** ${gate.recognized_problem_type || "unknown"}`,
+    `- **Dạng toán phụ:** ${gate.recognized_subtype || "unknown"}`,
+    `- **Mức tin cậy:** ${gate.confidence ?? "n/a"}`,
+    `- **Quyết định gate:** ${gate.decision_to_solve || "unknown"}`,
+    "",
+    "**Dấu hiệu nhận dạng:**",
+    ...(evidence.length ? evidence.map((item) => `- ${item}`) : ["- Chưa đủ tín hiệu rõ ràng."]),
+    "",
+    "**Dữ liệu cần có:**",
+    ...(required.length ? required.map((item) => `- ${item}`) : ["- Chưa xác định."]),
+    "",
+    "**Dữ liệu đã có:**",
+    ...(filled.length ? filled.map((item) => `- ${item}`) : ["- Chưa đủ slot bắt buộc."]),
+    "",
+    "**Dữ liệu còn thiếu nếu có:**",
+    ...(missing.length ? missing.map((item) => `- ${item}`) : ["- Không có slot bắt buộc bị thiếu."]),
+    "",
+    gate.decision_to_solve === "solve"
+      ? "**Kết luận:** Đủ điều kiện để xây mô hình, chọn solver và giải."
+      : "**Kết luận:** Chưa đủ điều kiện để đưa lời giải cuối cùng; cần làm rõ trước.",
+    "",
+  ].join("\n");
+}
+
+function EngineeringSolutionView({ data }: { data: EngineeringResult }) {
+  if (data.status !== "solved" || !data.solved?.result) {
+    const gateMd = recognitionGateMarkdown(data);
     return (
       <div className="analysis" style={{ marginTop: 16 }}>
         <h2>Engineering Solver Result</h2>
+        {gateMd ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{gateMd}</ReactMarkdown> : null}
         <p>{data.message || "Không đủ dữ liệu để khuyến nghị chắc chắn."}</p>
         {data.questions?.length ? data.questions.map((question) => <p key={question}>- {question}</p>) : null}
       </div>
     );
   }
 
-  if (result.markdown_report) {
-    return (
-      <div className="md-view" style={{ marginTop: 16 }}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-          {result.markdown_report}
-        </ReactMarkdown>
-      </div>
-    );
+  let md = recognitionGateMarkdown(data) || "";
+  md += "## Mô hình EDSS đã hiểu\n\n";
+  md += `**Loại bài toán**: ${data.solved.problem_type || data.problem?.problem_type || "unknown"}\n\n`;
+  if (data.solved.model?.formulation) {
+    md += "### Công thức / Formulation\n\n";
+    md += "```text\n" + data.solved.model.formulation + "\n```\n\n";
   }
-
-  if (data.solved?.problem_type === "dynamic_programming" && resourceAllocation) {
-    const resourceName = resourceAllocation.resource_name || "resource";
-    return (
-      <div className="solver-result">
-        <div className="solver-head">
-          <div>
-            <h2>Lời giải quy hoạch động</h2>
-            <p>Resource allocation dynamic programming</p>
-          </div>
-          <strong>{result.objective_value?.toFixed(0)}</strong>
-        </div>
-
-        <h3>1. Mô hình</h3>
-        <p>Trạng thái <code>F_k(s)</code>: lợi nhuận lớn nhất sau <code>k</code> ngày khi đã phân bổ tổng cộng <code>s</code> tấn.</p>
-        <p>Công thức truy hồi: <code>F_k(s) = max_x {"{ profit_k(x) + F_{k-1}(s-x) }"}</code>, với <code>x = 0..3</code> và <code>x ≤ s</code>.</p>
-        <p>Mục tiêu: maximize <code>F_3(7)</code>.</p>
-
-        <h3>2. Bảng lợi nhuận đầu vào</h3>
-        <div className="table-wrap">
-          <table className="solver-table">
-            <thead>
-              <tr><th>Ngày</th>{resourceAllocation.stage_returns[0].map((_, index) => <th key={index}>{index} tấn</th>)}</tr>
-            </thead>
-            <tbody>
-              {resourceAllocation.stage_returns.map((row, index) => (
-                <tr key={index}>
-                  <th>Ngày {index + 1}</th>
-                  {row.map((value, amount) => <td key={amount}>{value}</td>)}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <h3>3. Phân bổ tối ưu</h3>
-        <div className="table-wrap">
-          <table className="solver-table compact">
-            <thead><tr><th>Ngày</th><th>Sản xuất</th><th>Lợi nhuận</th></tr></thead>
-            <tbody>
-              {(result.allocation || []).map((item) => (
-                <tr key={item.stage}>
-                  <td>Ngày {item.stage}</td>
-                  <td>{Number(item[resourceName as keyof typeof item] ?? item.tons ?? item.resource ?? 0)} tấn</td>
-                  <td>{item.profit}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p><strong>Lợi nhuận tối đa: {result.objective_value?.toFixed(0)} × 10^5 USD.</strong></p>
-
-        <h3>4. Bảng DP</h3>
-        {(result.dp_tables || []).map((table) => (
-          <div className="table-wrap" key={table.stage}>
-            <table className="solver-table compact">
-              <thead><tr><th>Ngày {table.stage}</th><th>F(s)</th><th>Chọn x</th></tr></thead>
-              <tbody>
-                {Object.keys(table.values).map((state) => (
-                  <tr key={state}>
-                    <td>s = {state}</td>
-                    <td>{Number(table.values[state]).toFixed(0)}</td>
-                    <td>{table.choice[state]}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
-
-        <h3>5. Khuyến nghị</h3>
-        <p>{result.recommendation}</p>
-        <p>{data.solved?.recommendation_explanation}</p>
-        <p>Đây là quyết định tốt theo mô hình vì nó xét toàn bộ tổ hợp phân bổ 7 tấn qua 3 ngày, không chọn tham lam ngày có lợi nhuận cục bộ cao nhất.</p>
-      </div>
-    );
+  if (data.problem) {
+    const compactProblem = {
+      probability_tree: data.problem.probability_tree,
+      bayes: data.problem.bayes,
+      independent_probabilities: data.problem.independent_probabilities,
+      resource_allocation: data.problem.resource_allocation,
+      graph: data.problem.graph,
+      alternatives: data.problem.alternatives,
+      states: data.problem.states,
+      payoff_matrix: data.problem.payoff_matrix,
+      assumptions: data.problem.assumptions
+    };
+    md += "### Dữ liệu mô hình\n\n";
+    md += "```json\n" + JSON.stringify(compactProblem, null, 2) + "\n```\n\n";
   }
-
-  if (data.solved?.problem_type === "decision_tree" && data.problem?.probability_tree) {
-    const successDecimal = (result.success_probability ?? 0).toFixed(2);
-    const failureDecimal = (result.failure_probability ?? 0).toFixed(2);
-    return (
-      <div className="solver-result">
-        <div className="solver-head">
-          <div>
-            <h2>Lời giải cây xác suất</h2>
-            <p>Binary probability event tree</p>
-          </div>
-          <strong>{percent(result.queries?.at_least_one_success)}</strong>
-        </div>
-
-        <h3>1. Mô hình</h3>
-        <p>Gọi <code>T</code> là biến cố khoan trúng dầu, <code>K</code> là biến cố không trúng dầu.</p>
-        <p><code>P(T) = {percent(result.success_probability)}</code>, <code>P(K) = 1 - P(T) = {percent(result.failure_probability)}</code>.</p>
-        <p>Giả định hai giếng độc lập, nên xác suất của một đường đi bằng tích xác suất các nhánh.</p>
-
-        <h3>2. Sơ đồ hình cây</h3>
-        <div className="prob-tree">
-          <div className="prob-node root">Bắt đầu</div>
-          <div className="prob-level">
-            <div className="prob-node success">Giếng 1: Trúng dầu<br /><span>{percent(result.success_probability)}</span></div>
-            <div className="prob-node failure">Giếng 1: Không trúng dầu<br /><span>{percent(result.failure_probability)}</span></div>
-          </div>
-          <div className="prob-level outcomes">
-            {(result.outcomes || []).map((outcome) => (
-              <div className="prob-node outcome" key={outcome.label}>
-                {outcome.events.map((event, index) => <span key={`${event}-${index}`}>Giếng {index + 1}: {event}</span>)}
-                <strong>{percent(outcome.probability)}</strong>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <h3>3. Bốn biến cố đơn</h3>
-        <div className="table-wrap">
-          <table className="solver-table compact">
-            <thead><tr><th>Biến cố</th><th>Cách tính</th><th>Xác suất</th></tr></thead>
-            <tbody>
-              {(result.outcomes || []).map((outcome) => (
-                <tr key={outcome.label}>
-                  <td>{outcome.label}</td>
-                  <td>{outcome.events.map((event) => event === data.problem?.probability_tree?.success_label ? successDecimal : failureDecimal).join(" × ")}</td>
-                  <td>{percent(outcome.probability)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <h3>4. Câu b</h3>
-        <p>
-          Xác suất trúng dầu ở giếng thứ nhất và không trúng dầu ở giếng thứ hai:
-          <br />
-          <code>P(T1 ∩ K2) = {successDecimal} × {failureDecimal} = {percent(result.queries?.first_success_second_failure)}</code>.
-        </p>
-
-        <h3>5. Câu c</h3>
-        <p>
-          Xác suất trúng dầu ít nhất một giếng:
-          <br />
-          <code>P(ít nhất một T) = 1 - P(K1 ∩ K2) = 1 - {failureDecimal}² = {percent(result.queries?.at_least_one_success)}</code>.
-        </p>
-
-        <h3>6. Giả định</h3>
-        <ul className="solver-list">{data.problem.assumptions?.map((item) => <li key={item}>{item}</li>)}</ul>
-      </div>
-    );
+  if (data.solved.validation) {
+    md += "### Validation trước khi giải\n\n";
+    md += `**Hợp lệ**: ${data.solved.validation.is_valid ? "Có" : "Không"}\n\n`;
+    if (data.solved.validation.errors?.length) md += `**Errors**:\n${data.solved.validation.errors.map((item) => `- ${item}`).join("\n")}\n\n`;
+    if (data.solved.validation.warnings?.length) md += `**Warnings**:\n${data.solved.validation.warnings.map((item) => `- ${item}`).join("\n")}\n\n`;
+    if (data.solved.validation.info?.length) md += `**Info**:\n${data.solved.validation.info.map((item) => `- ${item}`).join("\n")}\n\n`;
   }
-
-  if (data.solved?.problem_type === "shortest_path") {
-    return (
-      <div className="solver-result">
-        <div className="solver-head">
-          <div>
-            <h2>Lời giải chi tiết</h2>
-            <p>Shortest Path / Dijkstra Algorithm</p>
-          </div>
-          <strong>{result.objective_value?.toFixed(0)}</strong>
-        </div>
-
-        <h3>1. Bài toán</h3>
-        <p>Tìm đường đi ngắn nhất từ đỉnh <code>{graph?.source}</code> đến đỉnh <code>{graph?.target}</code>.</p>
-
-        <h3>2. Kết quả</h3>
-        <p><strong>Đường đi:</strong> {result.path?.join(" → ")}</p>
-        <p><strong>Tổng chi phí:</strong> {result.objective_value}</p>
-
-        <h3>3. Khuyến nghị</h3>
-        <p>{result.recommendation}</p>
-        <p>{data.solved?.recommendation_explanation}</p>
-        {data.problem?.assumptions?.length ? (
-          <>
-            <h3>4. Giả định</h3>
-            <ul className="solver-list">{data.problem.assumptions.map((item) => <li key={item}>{item}</li>)}</ul>
-          </>
-        ) : null}
-      </div>
-    );
+  md += "## Kết quả solver\n\n";
+  if (data.solved.result.markdown_report) {
+    md += data.solved.result.markdown_report;
+  } else {
+    md += `**Status**: ${data.solved.result.status}\n\n`;
+    if (data.solved.problem_type) {
+      md += `**Loại bài toán**: ${data.solved.problem_type}\n\n`;
+    }
+    md += jsonToMarkdown(data.solved.result as Record<string, unknown>);
+    if (data.solved.recommendation_explanation) {
+      md += `\n\n## Khuyến nghị\n\n${data.solved.recommendation_explanation}\n`;
+    }
   }
-
-  if (!graph) {
-    return (
-      <div className="analysis" style={{ marginTop: 16 }}>
-        <h2>Engineering Solver Result</h2>
-        {JSON.stringify(data, null, 2)}
-      </div>
-    );
-  }
+  md += "\n\n## Ghi chú chất lượng quyết định\n\nKết quả số được tính bằng solver deterministic, không dùng LLM để tính toán. Outcome tốt sau thực tế có thể do may mắn; quyết định tốt là quyết định dựa trên mô hình đúng, dữ liệu đủ và giả định đã kiểm tra độ nhạy.\n";
 
   return (
-    <div className="solver-result">
-      <div className="solver-head">
-        <div>
-          <h2>Lời giải chi tiết</h2>
-          <p>Transportation / transmission cost minimization</p>
-        </div>
-        <strong>{result.objective_value?.toFixed(0)}</strong>
-      </div>
-
-      <h3>1. Mô hình toán học</h3>
-      <p>Biến quyết định: <code>x_ij</code> là MW truyền từ nhà máy <code>i</code> đến thành phố <code>j</code>.</p>
-      <p>Hàm mục tiêu: minimize <code>Σ c_ij x_ij</code>.</p>
-      <p>Ràng buộc: tổng phát từ mỗi nhà máy bằng công suất cung cấp; tổng nhận tại mỗi thành phố bằng nhu cầu; <code>x_ij ≥ 0</code>.</p>
-
-      <h3>2. Phân bổ tối ưu</h3>
-      <div className="table-wrap">
-        <table className="solver-table">
-          <thead>
-            <tr>
-              <th>Nhà máy / Thành phố</th>
-              {cities.map((city) => <th key={city}>{city}</th>)}
-              <th>Tổng phát</th>
-            </tr>
-          </thead>
-          <tbody>
-            {plants.map((plant) => (
-              <tr key={plant}>
-                <th>{plant}</th>
-                {cities.map((city) => {
-                  const item = allocationMap.get(`${plant}->${city}`);
-                  return <td key={city}>{item?.amount || 0}</td>;
-                })}
-                <td>{graph.supplies?.[plant]}</td>
-              </tr>
-            ))}
-            <tr>
-              <th>Nhu cầu</th>
-              {cities.map((city) => <td key={city}>{graph.demands?.[city]}</td>)}
-              <td>{cities.reduce((sum, city) => sum + Number(graph.demands?.[city] || 0), 0)}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <h3>3. Breakdown chi phí</h3>
-      <ul className="solver-list">
-        {allocations.map((item) => (
-          <li key={`${item.from}-${item.to}`}>
-            {item.from} → {item.to}: {item.amount} × {item.unit_cost} = {(item.amount * item.unit_cost).toFixed(0)}
-          </li>
-        ))}
-      </ul>
-      <p><strong>Tổng chi phí tối thiểu: {result.objective_value?.toFixed(0)}</strong></p>
-
-      <h3>4. Chứng chỉ tối ưu</h3>
-      <p>
-        {result.optimality_certificate?.is_optimal
-          ? "MODI/reduced cost check: tất cả reduced cost của ô chưa dùng đều không âm, nên nghiệm hiện tại là tối ưu."
-          : "Solver chưa có chứng chỉ tối ưu đầy đủ; cần chạy LP/min-cost flow để xác nhận."}
-      </p>
-      {result.optimality_certificate?.reduced_costs ? (
-        <div className="table-wrap">
-          <table className="solver-table compact">
-            <thead>
-              <tr><th>Ô chưa dùng</th><th>Reduced cost</th></tr>
-            </thead>
-            <tbody>
-              {Object.entries(result.optimality_certificate.reduced_costs).map(([route, value]) => (
-                <tr key={route}><td>{route}</td><td>{Number(value).toFixed(0)}</td></tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-
-      <h3>5. Khuyến nghị</h3>
-      <p>{result.recommendation}</p>
-      <p>{data.solved?.recommendation_explanation}</p>
-      {data.problem?.assumptions?.length ? (
-        <>
-          <h3>6. Giả định</h3>
-          <ul className="solver-list">{data.problem.assumptions.map((item) => <li key={item}>{item}</li>)}</ul>
-        </>
-      ) : null}
+    <div className="md-view" style={{ marginTop: 16 }}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className || "");
+            if (match?.[1] === "mermaid") {
+              return <MermaidView chart={String(children).replace(/\n$/, "")} />;
+            }
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          },
+        }}
+      >
+        {md}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -395,6 +323,7 @@ export default function Home() {
   const [engineeringText, setEngineeringText] = useState("");
   const [engineeringResult, setEngineeringResult] = useState<EngineeringResult | null>(null);
   const [engineeringLoading, setEngineeringLoading] = useState(false);
+  const [engineeringHistory, setEngineeringHistory] = useState<EngineeringHistoryItem[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [mapRefresh, setMapRefresh] = useState(0);
   const [mapFullscreen, setMapFullscreen] = useState(false);
@@ -418,6 +347,17 @@ export default function Home() {
     const syncFullscreen = () => setMapFullscreen(document.fullscreenElement === mapShellRef.current);
     document.addEventListener("fullscreenchange", syncFullscreen);
     return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(ENGINEERING_HISTORY_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as EngineeringHistoryItem[];
+      if (Array.isArray(parsed)) setEngineeringHistory(parsed);
+    } catch {
+      setEngineeringHistory([]);
+    }
   }, []);
 
   const winner = useMemo(() => result?.option_results[0], [result]);
@@ -508,11 +448,56 @@ export default function Home() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "EDSS solve failed");
       setEngineeringResult(data);
+      saveEngineeringHistory(engineeringText, data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "EDSS solve failed");
     } finally {
       setEngineeringLoading(false);
     }
+  }
+
+  function persistEngineeringHistory(items: EngineeringHistoryItem[]) {
+    setEngineeringHistory(items);
+    try {
+      window.localStorage.setItem(ENGINEERING_HISTORY_KEY, JSON.stringify(items));
+    } catch {
+      setError("Không thể lưu history vào localStorage.");
+    }
+  }
+
+  function titleFromEngineeringText(text: string, result: EngineeringResult) {
+    const firstHeading = text.split("\n").map((line) => line.replace(/^#+\s*/, "").trim()).find(Boolean);
+    const fallback = result.problem?.context?.title || result.solved?.problem_type || "EDSS case";
+    return (firstHeading || fallback).slice(0, 90);
+  }
+
+  function saveEngineeringHistory(text: string, data: EngineeringResult) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const item: EngineeringHistoryItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      title: titleFromEngineeringText(trimmed, data),
+      text: trimmed,
+      result: data,
+      createdAt: new Date().toISOString(),
+      problemType: data.solved?.problem_type || data.problem?.problem_type
+    };
+    const withoutDuplicate = engineeringHistory.filter((entry) => entry.text.trim() !== trimmed);
+    persistEngineeringHistory([item, ...withoutDuplicate].slice(0, MAX_ENGINEERING_HISTORY));
+  }
+
+  function loadEngineeringHistory(item: EngineeringHistoryItem) {
+    setEngineeringText(item.text);
+    setEngineeringResult(item.result);
+    setError("");
+  }
+
+  function deleteEngineeringHistory(id: string) {
+    persistEngineeringHistory(engineeringHistory.filter((item) => item.id !== id));
+  }
+
+  function clearEngineeringHistory() {
+    persistEngineeringHistory([]);
   }
 
   function buildClarifiedDecision() {
@@ -743,6 +728,35 @@ export default function Home() {
             <Sparkles size={16} />
             {engineeringLoading ? "Đang giải..." : "Giải bằng EDSS"}
           </button>
+        </section>
+
+        <section>
+          <div className="history-head">
+            <div>
+              <h2>History bài đã giải</h2>
+              <p className="small">Lưu trên trình duyệt local của máy này.</p>
+            </div>
+            <button className="icon-button" title="Xóa toàn bộ history" onClick={clearEngineeringHistory} disabled={!engineeringHistory.length}>
+              <Trash2 size={15} />
+            </button>
+          </div>
+          {engineeringHistory.length ? (
+            <div className="history-list">
+              {engineeringHistory.map((item) => (
+                <div className="history-item" key={item.id}>
+                  <button className="history-main" onClick={() => loadEngineeringHistory(item)} title="Mở lại bài đã giải">
+                    <strong>{item.title}</strong>
+                    <span>{item.problemType || "unknown"} · {new Date(item.createdAt).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" })}</span>
+                  </button>
+                  <button className="icon-button" title="Xóa bài này khỏi history" onClick={() => deleteEngineeringHistory(item.id)}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="small">Chưa có bài nào trong history.</p>
+          )}
         </section>
       </aside>
 

@@ -29,7 +29,74 @@ def expected_payoff(problem: dict[str, Any]) -> dict[str, Any]:
         worst = min((lookup.get((name, state["name"]), 0.0) for state in states), default=0.0)
         results.append({"alternative": name, "expected_value": value, "worst_case": worst})
     results.sort(key=lambda item: item["expected_value"], reverse=True)
-    return {"status": "computed", "criterion": "expected_value", "results": results, "recommendation": results[0]["alternative"] if results else None}
+    md = "### Báo cáo Expected Value\n\n"
+    md += "#### 1. Công thức\n\n"
+    md += "EV(a_i) = Σ_j P(s_j) × payoff(a_i, s_j)\n\n"
+    md += "#### 2. Kết quả theo phương án\n\n"
+    md += "| Phương án | Expected value | Worst case |\n|---|---:|---:|\n"
+    for row in results:
+        md += f"| {row['alternative']} | {row['expected_value']:.4f} | {row['worst_case']:.4f} |\n"
+    if results:
+        md += f"\n#### 3. Khuyến nghị\n\nChọn **{results[0]['alternative']}** vì có expected value lớn nhất. Đây là quyết định tốt theo mô hình kỳ vọng, không phải bảo đảm outcome thực tế chắc chắn tốt.\n"
+    return {
+        "status": "computed",
+        "criterion": "expected_value",
+        "results": results,
+        "recommendation": results[0]["alternative"] if results else None,
+        "markdown_report": md,
+    }
+
+
+def solve_bayes_problem(problem: dict[str, Any]) -> dict[str, Any]:
+    spec = problem.get("bayes", {})
+    prior = min(1.0, max(0.0, float(spec.get("prior", 0.5))))
+    sensitivity = min(1.0, max(0.0, float(spec.get("sensitivity", 0.9))))
+    false_positive_rate = min(1.0, max(0.0, float(spec.get("false_positive_rate", 0.1))))
+    observed_positive = bool(spec.get("observed_positive", True))
+    result = bayesian_update(prior, sensitivity, false_positive_rate, observed_positive)
+    evidence_symbol = "E+" if observed_positive else "E-"
+    md = "### Báo cáo Bayes\n\n"
+    md += "#### 1. Mô hình\n\n"
+    md += f"- Prior P(H): {prior:.2%}\n"
+    md += f"- Sensitivity P(E+|H): {sensitivity:.2%}\n"
+    md += f"- False positive P(E+|¬H): {false_positive_rate:.2%}\n"
+    md += f"- Quan sát: {evidence_symbol}\n\n"
+    md += "#### 2. Công thức\n\n"
+    if observed_positive:
+        md += "P(H|E+) = P(E+|H)P(H) / [P(E+|H)P(H) + P(E+|¬H)P(¬H)]\n\n"
+    else:
+        md += "P(H|E-) = P(E-|H)P(H) / [P(E-|H)P(H) + P(E-|¬H)P(¬H)]\n\n"
+    md += "#### 3. Kết quả\n\n"
+    md += f"- P(evidence): {result['evidence_probability']:.4f}\n"
+    md += f"- Posterior: **{result['posterior']:.2%}**\n\n"
+    md += "#### 4. Khuyến nghị\n\nPosterior là xác suất đã cập nhật sau bằng chứng. Nếu dữ liệu sensitivity hoặc false-positive chưa chắc, cần phân tích độ nhạy trước khi ra quyết định chắc chắn.\n"
+    return {**result, "status": "computed", "solver": "bayes_rule", "markdown_report": md, "recommendation": "Dùng posterior probability sau khi cập nhật bằng chứng."}
+
+
+def solve_independent_probability(problem: dict[str, Any]) -> dict[str, Any]:
+    probs = [min(1.0, max(0.0, float(p))) for p in problem.get("independent_probabilities", [])]
+    p_all = 1.0
+    p_none = 1.0
+    for p in probs:
+        p_all *= p
+        p_none *= 1 - p
+    p_at_least_one = 1 - p_none
+    md = "### Báo cáo biến cố độc lập\n\n"
+    md += f"Xác suất từng biến cố: {', '.join(f'{p:.2%}' for p in probs)}\n\n"
+    md += "| Đại lượng | Công thức | Kết quả |\n|---|---|---:|\n"
+    md += f"| Tất cả xảy ra | Π p_i | {p_all:.4%} |\n"
+    md += f"| Không biến cố nào xảy ra | Π (1-p_i) | {p_none:.4%} |\n"
+    md += f"| Ít nhất một biến cố xảy ra | 1 - Π(1-p_i) | {p_at_least_one:.4%} |\n"
+    return {
+        "status": "computed",
+        "solver": "independent_probability",
+        "individual_probabilities": probs,
+        "P_all_occur": p_all,
+        "P_none_occur": p_none,
+        "P_at_least_one": p_at_least_one,
+        "markdown_report": md,
+        "recommendation": "Dùng phép nhân xác suất độc lập; nếu biến cố phụ thuộc thì mô hình này không hợp lệ.",
+    }
 
 
 def decision_criteria(problem: dict[str, Any], alpha: float = 0.5) -> dict[str, Any]:
@@ -148,20 +215,26 @@ def solve_binary_event_tree(problem: dict[str, Any]) -> dict[str, Any]:
         events = []
         probability = 1.0
         successes = 0
+        calc_steps = []
         for trial in range(trials):
             is_success = bool(mask & (1 << (trials - trial - 1)))
             events.append(success_label if is_success else failure_label)
             if is_success:
                 successes += 1
                 probability *= success_probability
+                calc_steps.append(f"{success_probability:.2f}")
             else:
                 probability *= failure_probability
+                calc_steps.append(f"{failure_probability:.2f}")
+                
+        calc_str = " \\times ".join(calc_steps) + f" = {probability:.4f}"
         outcomes.append(
             {
                 "events": events,
                 "label": " / ".join(events),
                 "probability": probability,
                 "success_count": successes,
+                "calculation": calc_str,
             }
         )
 
@@ -181,6 +254,40 @@ def solve_binary_event_tree(problem: dict[str, Any]) -> dict[str, Any]:
         for trial in range(trials)
     ]
 
+    md = f"### Báo cáo kết quả cây xác suất (Probability Tree)\n\n"
+    md += f"**Mô hình:** {trials} sự kiện độc lập liên tiếp.\n"
+    md += f"- Xác suất `{success_label}`: {success_probability:.2%}\n"
+    md += f"- Xác suất `{failure_label}`: {failure_probability:.2%}\n\n"
+
+    md += "#### 1. Cấu trúc cây xác suất\n\n"
+    md += "```mermaid\ngraph LR\n"
+    md += "  Start((Bắt đầu))\n"
+    for trial in range(trials):
+        prev_nodes = [f"N{trial}_{i}" for i in range(2**trial)] if trial > 0 else ["Start"]
+        for i, parent in enumerate(prev_nodes):
+            md += f"  {parent} -->|\"{success_probability:.2f}\"| N{trial+1}_{i*2}[\"{success_label}\"]\n"
+            md += f"  {parent} -->|\"{failure_probability:.2f}\"| N{trial+1}_{i*2+1}[\"{failure_label}\"]\n"
+    md += "```\n\n"
+
+    md += "#### 2. Không gian mẫu và Xác suất các biến cố đơn\n\n"
+    md += "| Lộ trình các sự kiện | Tổng số lần đạt | Chi tiết phép tính | Xác suất |\n"
+    md += "|:---|:---:|:---|---:|\n"
+    for outcome in outcomes:
+        md += f"| {outcome['label']} | {outcome['success_count']} | ${outcome['calculation']}$ | **{outcome['probability']:.2%}** |\n"
+    md += "\n"
+
+    if trials >= 2:
+        md += "#### 3. Phân tích các câu hỏi liên quan\n\n"
+        
+        # Breakdown for at least one success
+        md += f"- **Xác suất có ít nhất 1 lần `{success_label}`:** `{at_least_one_success:.2%}`\n"
+        md += f"  - *Cách tính (Phần bù):* $1 - P(\\text{{0 lần đạt}}) = 1 - ({failure_probability}^{trials}) = 1 - {failure_probability**trials:.4f} = {at_least_one_success:.4f}$\n"
+        
+        # Breakdown for first success, second failure
+        if first_success_second_failure is not None:
+            md += f"- **Xác suất lần 1 `{success_label}`, lần 2 `{failure_label}`:** `{first_success_second_failure:.2%}`\n"
+            md += f"  - *Cách tính (Nhân xác suất độc lập):* $P(\\text{{Lần 1}}) \\times P(\\text{{Lần 2}}) = {success_probability:.2f} \\times {failure_probability:.2f} = {first_success_second_failure:.4f}$\n"
+
     return {
         "status": "computed",
         "solver": "binary_probability_tree",
@@ -193,6 +300,7 @@ def solve_binary_event_tree(problem: dict[str, Any]) -> dict[str, Any]:
             "first_success_second_failure": first_success_second_failure,
             "at_least_one_success": at_least_one_success,
         },
+        "markdown_report": md,
         "recommendation": "Dùng cây xác suất độc lập để liệt kê đầy đủ các biến cố đơn và cộng các biến cố thỏa điều kiện.",
     }
 

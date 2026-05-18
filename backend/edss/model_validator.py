@@ -23,6 +23,10 @@ def validate_model(problem: dict[str, Any]) -> dict[str, Any]:
         _validate_transportation(problem, errors, warnings, info)
     elif kind == "assignment":
         _validate_assignment(problem, errors, warnings, info)
+    elif kind in ("shortest_path", "max_flow", "min_cost_flow", "network_flow"):
+        _validate_network(problem, kind, errors, warnings, info)
+    elif kind == "dynamic_programming":
+        _validate_dynamic_programming(problem, errors, warnings, info)
     elif kind in ("decision_tree", "expected_value"):
         _validate_decision_uncertainty(problem, errors, warnings)
 
@@ -30,6 +34,25 @@ def validate_model(problem: dict[str, Any]) -> dict[str, Any]:
 
 
 def _check_probabilities(problem: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
+    if problem.get("probability_tree"):
+        spec = problem["probability_tree"]
+        p = float(spec.get("success_probability", 0))
+        if p < 0 or p > 1:
+            errors.append(f"Xác suất success_probability phải nằm trong [0,1], hiện là {p}.")
+        if int(spec.get("trials", 0) or 0) < 1:
+            errors.append("Probability tree cần số lần thử trials >= 1.")
+    if problem.get("bayes"):
+        spec = problem["bayes"]
+        for key in ("prior", "sensitivity", "false_positive_rate"):
+            value = float(spec.get(key, 0))
+            if value < 0 or value > 1:
+                errors.append(f"Bayes parameter '{key}' phải nằm trong [0,1], hiện là {value}.")
+    if problem.get("independent_probabilities"):
+        for i, p in enumerate(problem["independent_probabilities"]):
+            value = float(p)
+            if value < 0 or value > 1:
+                errors.append(f"Xác suất biến cố độc lập thứ {i + 1} phải nằm trong [0,1], hiện là {value}.")
+
     states = problem.get("states", [])
     if not states:
         return
@@ -125,7 +148,49 @@ def _validate_assignment(problem: dict[str, Any], errors: list[str], warnings: l
         info.append(f"Ma trận không vuông ({rows}×{cols}); sẽ pad dummy.")
 
 
+def _validate_network(problem: dict[str, Any], kind: str, errors: list[str], warnings: list[str], info: list[str]) -> None:
+    graph = problem.get("graph", {})
+    edges = graph.get("edges", [])
+    if not edges:
+        errors.append("Network problem cần danh sách cạnh.")
+        return
+    for edge in edges:
+        if kind == "shortest_path" and float(edge.get("cost", 0)) < 0:
+            errors.append("Shortest path bằng Dijkstra không hỗ trợ edge cost âm.")
+        if kind in ("max_flow", "min_cost_flow") and float(edge.get("capacity", 0)) < 0:
+            errors.append("Network flow không hỗ trợ capacity âm.")
+    if kind == "max_flow":
+        if not graph.get("source"):
+            errors.append("Max flow cần source.")
+        if not (graph.get("sink") or graph.get("target")):
+            errors.append("Max flow cần sink/target.")
+    if kind == "min_cost_flow":
+        nodes = graph.get("nodes", [])
+        if not nodes:
+            errors.append("Min-cost flow cần nodes có supply/demand.")
+        balance = sum(float(n.get("supply", 0)) - float(n.get("demand", 0)) for n in nodes)
+        if abs(balance) > 1e-8:
+            warnings.append(f"Tổng supply-demand = {balance:.4f}; min-cost flow có thể infeasible nếu không thêm dummy.")
+
+
+def _validate_dynamic_programming(problem: dict[str, Any], errors: list[str], warnings: list[str], info: list[str]) -> None:
+    spec = problem.get("resource_allocation")
+    if not spec:
+        return
+    total = int(spec.get("total_resource", -1))
+    rows = spec.get("stage_returns", [])
+    if total < 0:
+        errors.append("DP resource allocation cần total_resource >= 0.")
+    if not rows:
+        errors.append("DP resource allocation cần stage_returns.")
+    for idx, row in enumerate(rows):
+        if len(row) <= total:
+            warnings.append(f"Stage {idx + 1} chỉ có {len(row)} mức, có thể không đủ để xét total_resource={total}.")
+
+
 def _validate_decision_uncertainty(problem: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
+    if problem.get("probability_tree") or problem.get("bayes") or problem.get("independent_probabilities"):
+        return
     if not problem.get("alternatives"):
         errors.append("Cần ít nhất 2 alternatives.")
     if not problem.get("states"):

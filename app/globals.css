@@ -294,6 +294,63 @@ textarea {
   color: var(--muted);
 }
 
+.history-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.history-head h2 {
+  margin-bottom: 4px;
+}
+
+.history-head p {
+  margin: 0 0 8px;
+}
+
+.history-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.history-main {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.history-main strong,
+.history-main span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-main strong {
+  font-size: 13px;
+}
+
+.history-main span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .safety-strip {
   margin-top: 12px;
   padding: 10px 12px;
@@ -545,6 +602,20 @@ textarea {
 .md-view code { font-family: monospace; font-size: 12px; padding: 2px 4px; background: #f0f0f0; border-radius: 4px; color: var(--blue); }
 .md-view pre { padding: 12px; background: #fbfaf7; border-radius: 6px; border-left: 3px solid var(--blue); overflow-x: auto; margin: 10px 0; }
 .md-view pre code { padding: 0; background: none; color: var(--ink); font-size: 12px; }
+.md-view .mermaid-wrapper {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  overflow-x: auto;
+}
+.md-view .mermaid-wrapper svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
 .md-view table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
 .md-view th { text-align: left; padding: 8px 10px; font-weight: 600; background: #f4f1ea; border-bottom: 2px solid var(--line); }
 .md-view td { padding: 6px 10px; border-bottom: 1px solid var(--line); }

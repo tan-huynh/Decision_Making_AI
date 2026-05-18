@@ -148,6 +148,186 @@ class EDSSEngineTests(unittest.TestCase):
         self.assertAlmostEqual(solved["queries"]["first_success_second_failure"], 0.09)
         self.assertAlmostEqual(solved["queries"]["at_least_one_success"], 0.19)
 
+    def test_text_solver_bayes_problem(self):
+        text = """
+        Giải bằng Bayes. P(H)=1%, P(E|H)=99%, P(E|not H)=5%.
+        Quan sát kết quả dương tính. Hãy tính posterior.
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        self.assertEqual(result["solved"]["problem_type"], "decision_tree")
+        solved = result["solved"]["result"]
+        self.assertEqual(solved["solver"], "bayes_rule")
+        self.assertAlmostEqual(solved["posterior"], 0.166667, places=5)
+        self.assertTrue(result["solved"]["validation"]["is_valid"])
+
+    def test_text_solver_expected_value_problem(self):
+        text = """
+        Expected value decision.
+        States: high, low
+        Probabilities: 0.4, 0.6
+        A: 100, 0
+        B: 50, 40
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        self.assertEqual(result["solved"]["problem_type"], "decision_tree")
+        self.assertEqual(result["solved"]["result"]["recommendation"], "B")
+        self.assertAlmostEqual(result["solved"]["result"]["results"][0]["expected_value"], 44)
+
+    def test_text_solver_markdown_linear_programming_batch(self):
+        text = r"""
+        ### Bài 3
+        Solve the following **linear programming problems**.
+
+        #### a)
+        Maximize:
+        \[
+        Z = 2x + 5y
+        \]
+        Subject to:
+        \[
+        3x + 4y \leq 8
+        \]
+        \[
+        2x + 7y \leq 12
+        \]
+        \[
+        x \geq 0,\quad y \geq 0
+        \]
+
+        #### b)
+        Maximize:
+        \[
+        Z = 3x_1 - x_2 + 2x_3 + 4x_4
+        \]
+        Subject to:
+        \[
+        x_2 + 7x_3 + 2x_4 = 9
+        \]
+        \[
+        2x_1 + 3x_2 + x_3 = 12
+        \]
+        \[
+        x_i \geq 0,\quad i = 1,2,3,4
+        \]
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        self.assertEqual(result["solved"]["problem_type"], "linear_programming_batch")
+        items = result["solved"]["result"]["items"]
+        self.assertEqual(len(items), 2)
+        self.assertAlmostEqual(items[0]["result"]["objective_value"], 116 / 13, places=5)
+        self.assertAlmostEqual(items[0]["result"]["all_values"]["x"], 8 / 13, places=5)
+        self.assertAlmostEqual(items[0]["result"]["all_values"]["y"], 20 / 13, places=5)
+        self.assertAlmostEqual(items[1]["result"]["objective_value"], 36, places=5)
+        self.assertAlmostEqual(items[1]["result"]["all_values"]["x1"], 6, places=5)
+        self.assertAlmostEqual(items[1]["result"]["all_values"]["x4"], 4.5, places=5)
+
+    def test_text_solver_lp_minimize_with_ge_constraint(self):
+        text = """
+        Minimize:
+        Z = x + y
+        Subject to:
+        x + y ≥ 4
+        x ≥ 0, y ≥ 0
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        item = result["solved"]["result"]["items"][0]["result"]
+        self.assertEqual(item["status"], "optimal")
+        self.assertAlmostEqual(item["objective_value"], 4)
+
+    def test_text_solver_lp_infeasible(self):
+        text = """
+        Maximize:
+        Z = x
+        Subject to:
+        x <= 1
+        x >= 2
+        x >= 0
+        """
+        result = solve_text_problem(text)
+        item = result["solved"]["result"]["items"][0]["result"]
+        self.assertEqual(item["status"], "infeasible")
+        self.assertIn("không có nghiệm khả thi", item["markdown_report"].lower())
+
+    def test_text_solver_lp_unbounded(self):
+        text = """
+        Maximize:
+        Z = x + y
+        Subject to:
+        x - y >= 0
+        x >= 0, y >= 0
+        """
+        result = solve_text_problem(text)
+        item = result["solved"]["result"]["items"][0]["result"]
+        self.assertEqual(item["status"], "unbounded")
+        self.assertIn("không bị chặn", item["markdown_report"].lower())
+
+    def test_text_solver_lp_unicode_leq(self):
+        text = """
+        Maximize:
+        Z = 4x1 + 3x2
+        Subject to:
+        2x1 + x2 ≤ 8
+        x1 + 2x2 ≤ 8
+        x1 >= 0, x2 >= 0
+        """
+        result = solve_text_problem(text)
+        item = result["solved"]["result"]["items"][0]["result"]
+        self.assertEqual(item["status"], "optimal")
+        self.assertAlmostEqual(item["objective_value"], 56 / 3, places=5)
+
+    def test_text_solver_max_flow(self):
+        text = """
+        Max flow problem
+        Source: S
+        Sink: T
+        S -> A | 3
+        S -> B | 2
+        A -> T | 2
+        B -> T | 4
+        A -> B | 1
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        self.assertEqual(result["solved"]["problem_type"], "max_flow")
+        self.assertEqual(result["solved"]["result"]["status"], "optimal")
+        self.assertAlmostEqual(result["solved"]["result"]["objective_value"], 5)
+        self.assertIn("Max Flow", result["solved"]["result"]["markdown_report"])
+
+    def test_text_solver_min_cost_flow(self):
+        text = """
+        Min cost flow problem
+        S: supply=5
+        T: demand=5
+        S -> A | 1 | 3
+        S -> T | 5 | 5
+        A -> T | 1 | 3
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        self.assertEqual(result["solved"]["problem_type"], "min_cost_flow")
+        self.assertEqual(result["solved"]["result"]["status"], "optimal")
+        self.assertAlmostEqual(result["solved"]["result"]["objective_value"], 16)
+
+    def test_text_solver_general_dp_minimize(self):
+        text = """
+        Dynamic programming resource allocation
+        Minimize cost
+        Total resource: 4
+        Stage 1: 0, 4, 7, 9, 12
+        Stage 2: 0, 3, 6, 10, 13
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        self.assertEqual(result["solved"]["problem_type"], "dynamic_programming")
+        solved = result["solved"]["result"]
+        self.assertEqual(solved["sense"], "minimize")
+        self.assertAlmostEqual(solved["objective_value"], 12)
+        self.assertEqual([item["resource"] for item in solved["allocation"]], [4, 0])
+
 
 if __name__ == "__main__":
     unittest.main()

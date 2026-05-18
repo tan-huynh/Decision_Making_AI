@@ -2,13 +2,18 @@
 
 import "./edss.css";
 
-import { useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { useState, useEffect, useRef } from "react";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import mermaid from "mermaid";
 import {
   Activity, BarChart3, Brain, Calculator,
-  GitBranch, Shield, Target, Zap
+  GitBranch, HelpCircle, Shield, Target, X, Zap
 } from "lucide-react";
+
+mermaid.initialize({ startOnLoad: false, theme: "dark" });
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8008";
 
@@ -20,6 +25,149 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "data", label: "Dữ liệu", icon: <BarChart3 size={16} /> },
   { id: "risk", label: "Rủi ro", icon: <Shield size={16} /> },
   { id: "criteria", label: "Tiêu chí", icon: <GitBranch size={16} /> },
+];
+
+const HELP_TOPICS = [
+  {
+    id: "lp_step_by_step",
+    title: "1. Linear Programming Step-by-Step",
+    status: "Implemented",
+    computes: "Chuẩn hóa LP, giải LP bằng HiGHS, giải hình học cho 2 biến, simplex tableau cho dạng max Ax <= b, >=/= qua solver report.",
+    endpoints: "/edss/solve-text, /edss/solve/lp, /edss/solve/lp/simplex",
+  },
+  {
+    id: "duality",
+    title: "2. Duality",
+    status: "Implemented",
+    computes: "Sinh dual cho primal max Ax <= b, so sánh primal/dual objective, kiểm tra complementary slackness.",
+    endpoints: "/edss/solve/lp/duality",
+  },
+  {
+    id: "sensitivity",
+    title: "3. Sensitivity Analysis",
+    status: "Implemented",
+    computes: "Slack, binding constraints, shadow price, reduced cost, khoảng RHS và objective coefficient bằng parametric re-solve.",
+    endpoints: "/edss/sensitivity, /edss/solve/lp/sensitivity-ranges",
+  },
+  {
+    id: "mip",
+    title: "4. Integer and Mixed-Integer Programming",
+    status: "Implemented",
+    computes: "Biến integer/binary, capital budgeting/facility template dạng structured, dùng scipy.milp hoặc enumeration nhỏ.",
+    endpoints: "/edss/solve/mip",
+  },
+  {
+    id: "goal_programming",
+    title: "5. Goal Programming",
+    status: "Implemented",
+    computes: "Weighted goal programming bằng deviation variables d- và d+, preemptive sequential solve.",
+    endpoints: "/edss/solve/goal-programming",
+  },
+  {
+    id: "network",
+    title: "6. Network Optimization",
+    status: "Implemented",
+    computes: "Shortest path, Bellman-Ford, MST, transportation, assignment, max-flow, min-cost-flow.",
+    endpoints: "/edss/solve/shortest-path, /edss/solve/bellman-ford, /edss/solve/mst, /edss/solve/max-flow, /edss/solve/min-cost-flow",
+  },
+  {
+    id: "dp",
+    title: "7. Dynamic Programming",
+    status: "Implemented",
+    computes: "Resource allocation DP, production planning DP dạng bảng lợi nhuận, finite-stage DP, inventory DP nhiều kỳ, stochastic inventory simulation.",
+    endpoints: "/edss/solve-text, /edss/inventory/dp, /edss/inventory/stochastic-sim",
+  },
+  {
+    id: "inventory",
+    title: "8. Inventory Models",
+    status: "Implemented",
+    computes: "EOQ, quantity discount, production lot size, reorder point, safety stock, newsvendor, deterministic DP, stochastic inventory simulation.",
+    endpoints: "/edss/inventory/eoq, /edss/inventory/newsvendor, /edss/inventory/quantity-discount, /edss/inventory/dp, /edss/inventory/stochastic-sim",
+  },
+  {
+    id: "queueing",
+    title: "9. Queueing Theory",
+    status: "Implemented",
+    computes: "M/M/1, M/M/c, M/M/1/K, M/G/1, open queue network, rho, L, Lq, W, Wq và điều kiện ổn định.",
+    endpoints: "/edss/queueing/mm1, /edss/queueing/mmc, /edss/queueing/mm1k, /edss/queueing/mg1, /edss/queueing/network",
+  },
+  {
+    id: "markov",
+    title: "10. Markov Chain / Random Process",
+    status: "Implemented",
+    computes: "P^n, steady-state distribution, absorbing Markov chain, expected time to absorption.",
+    endpoints: "/edss/markov/n-step, /edss/markov/steady-state, /edss/markov/absorbing",
+  },
+  {
+    id: "simulation",
+    title: "11. Simulation",
+    status: "Implemented",
+    computes: "Monte Carlo, risk samples, VaR/CVaR, inventory stochastic simulation, confidence-oriented output.",
+    endpoints: "/analyze, /edss/risk/var, /edss/inventory/stochastic-sim",
+  },
+  {
+    id: "nonlinear",
+    title: "12. Nonlinear Programming",
+    status: "Implemented",
+    computes: "Quadratic NLP structured input, SLSQP solve, KKT notes, convexity eigenvalue check.",
+    endpoints: "/edss/solve/nonlinear",
+  },
+  {
+    id: "decision_tree",
+    title: "13. Decision Tree",
+    status: "Implemented",
+    computes: "Decision/chance/outcome tree, rollback expected value, probability tree, Bayes event tree.",
+    endpoints: "/edss/solve-text, /edss/decision-criteria",
+  },
+  {
+    id: "influence_diagram",
+    title: "14. Influence Diagram",
+    status: "Implemented",
+    computes: "Decision/chance/value nodes, dependency arcs, topological order, Mermaid report, decision-tree skeleton conversion.",
+    endpoints: "/edss/influence-diagram/analyze, /edss/influence-diagram/to-tree",
+  },
+  {
+    id: "probability",
+    title: "15. Probability Assessment",
+    status: "Implemented",
+    computes: "Prior, conditional probability, Bayes update, independent events, distribution PMF/PDF/CDF, distribution fit.",
+    endpoints: "/edss/probability/bayes, /edss/probability/independent, /edss/probability/distribution, /edss/probability/fit",
+  },
+  {
+    id: "voi",
+    title: "16. Value of Information",
+    status: "Implemented",
+    computes: "EVPI, EVSI/EVI với likelihood của test/survey, posterior probability và khuyến nghị mua thông tin.",
+    endpoints: "/edss/information/evpi, /edss/information/evi",
+  },
+  {
+    id: "utility",
+    title: "17. Utility Theory",
+    status: "Implemented",
+    computes: "Expected utility, exponential utility, certainty equivalent, risk premium, fit risk tolerance từ preference questions.",
+    endpoints: "/edss/utility/expected, /edss/utility/exponential-ce, /edss/utility/fit-risk-tolerance",
+  },
+  {
+    id: "mada",
+    title: "18. Multi-Attribute Decision Analysis",
+    status: "Implemented",
+    computes: "Weighted scoring, Pareto frontier, additive utility MAUT, AHP weights và consistency ratio.",
+    endpoints: "/edss/solve, /edss/mada/additive-utility, /edss/mada/ahp",
+  },
+  {
+    id: "risk",
+    title: "19. Risk Analysis",
+    status: "Implemented",
+    computes: "Expected value, variance via samples, probability of loss, VaR, CVaR, worst-case sample.",
+    endpoints: "/edss/risk/var",
+  },
+  {
+    id: "teaching",
+    title: "20. Explanation and Teaching",
+    status: "Implemented",
+    computes: "Markdown report từng bước cho các solver và behavioral bias audit cho subjective judgment.",
+    endpoints: "Tự động trong markdown_report của các solver, /edss/behavioral/audit",
+  },
 ];
 
 async function api(path: string, body: unknown) {
@@ -35,10 +183,134 @@ async function api(path: string, body: unknown) {
    Markdown Renderer
    ═══════════════════════════════════════════════════════════════ */
 
+function MermaidView({ chart }: { chart: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const cleanChart = normalizeMermaidChart(chart);
+
+  useEffect(() => {
+    let cancelled = false;
+    const id = `mermaid-${Math.random().toString(36).slice(2)}`;
+    if (!ref.current) return;
+    ref.current.textContent = "";
+    mermaid
+      .render(id, cleanChart)
+      .then(({ svg }) => {
+        if (!cancelled && ref.current) ref.current.innerHTML = svg;
+      })
+      .catch((err) => {
+        if (ref.current) {
+          ref.current.textContent = `Mermaid render error: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cleanChart]);
+
+  return <div ref={ref} className="mermaid-wrapper" style={{ margin: "1.5rem 0", display: "flex", justifyContent: "center", background: "var(--bg-secondary)", padding: "1rem", borderRadius: "8px" }} />;
+}
+
+function normalizeMermaidChart(value: string): string {
+  return value
+    .replace(/^\s*```mermaid\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+}
+
+function isMermaidChart(value: string): boolean {
+  return /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|mindmap|timeline)\b/i.test(
+    normalizeMermaidChart(value)
+  );
+}
+
+function markdownUrlTransform(url: string): string {
+  if (/^data:image\/(?:svg\+xml|png|jpeg|jpg|webp);/i.test(url)) return url;
+  return defaultUrlTransform(url);
+}
+
 function MarkdownView({ content }: { content: string }) {
   return (
     <div className="md-view">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <link href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css" rel="stylesheet" />
+      <ReactMarkdown 
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        urlTransform={markdownUrlTransform}
+        components={{
+          img({ src, alt, ...props }) {
+            if (!src) return null;
+            return <img src={src} alt={alt || ""} {...props} />;
+          },
+          pre({ children, ...props }) {
+            const raw = String((children as any)?.props?.children ?? "");
+            const className = String((children as any)?.props?.className ?? "");
+            if (className.includes("language-mermaid") || isMermaidChart(raw)) {
+              return <MermaidView chart={raw} />;
+            }
+            return <pre {...props}>{children}</pre>;
+          },
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className || "");
+            const lang = match ? match[1] : "";
+            const raw = String(children).replace(/\n$/, "");
+            if (lang === "mermaid" || isMermaidChart(raw)) {
+              return <MermaidView chart={raw} />;
+            }
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          }
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function HelpModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="edss-help-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="edss-help-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="edss-help-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="edss-help-head">
+          <div>
+            <h2 id="edss-help-title"><HelpCircle size={20} /> 20 chủ đề chương trình có thể tính toán</h2>
+            <p>
+              Các mục dưới đây cho biết EDSS đang dùng solver thật ở đâu, module nào đã đầy đủ,
+              và module nào còn ở mức partial/scaffold.
+            </p>
+          </div>
+          <button className="edss-icon-btn" onClick={onClose} aria-label="Đóng help">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="edss-help-summary">
+          <span><strong>Implemented</strong>: solver/report đang dùng được trực tiếp.</span>
+          <span><strong>Partial</strong>: đã có engine chính nhưng chưa full textbook mọi biến thể.</span>
+        </div>
+
+        <div className="edss-help-grid">
+          {HELP_TOPICS.map((topic) => (
+            <article key={topic.id} className="edss-help-card">
+              <div className="edss-help-card-head">
+                <h3>{topic.title}</h3>
+                <span className={`edss-help-status ${topic.status.toLowerCase()}`}>{topic.status}</span>
+              </div>
+              <p>{topic.computes}</p>
+              <div className="edss-help-endpoint">{topic.endpoints}</div>
+            </article>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -98,6 +370,40 @@ function jsonToMarkdown(data: Record<string, unknown>, depth = 0): string {
   return lines.join("\n");
 }
 
+function recognitionGateMarkdown(data: Record<string, any>): string {
+  const gate = data?.recognition_gate;
+  if (!gate) return "";
+  const evidence = Array.isArray(gate.evidence) ? gate.evidence : [];
+  const required = Array.isArray(gate.required_slots) ? gate.required_slots : [];
+  const filled = Array.isArray(gate.filled_slots) ? gate.filled_slots : [];
+  const missing = Array.isArray(gate.missing_slots) ? gate.missing_slots : [];
+  return [
+    "## 1. Nhận dạng dạng toán",
+    "",
+    `- **Dạng toán chính:** ${gate.recognized_problem_type || "unknown"}`,
+    `- **Dạng toán phụ:** ${gate.recognized_subtype || "unknown"}`,
+    `- **Mức tin cậy:** ${gate.confidence ?? "n/a"}`,
+    `- **Quyết định gate:** ${gate.decision_to_solve || "unknown"}`,
+    "",
+    "**Dấu hiệu nhận dạng:**",
+    ...(evidence.length ? evidence.map((item: string) => `- ${item}`) : ["- Chưa đủ tín hiệu rõ ràng."]),
+    "",
+    "**Dữ liệu cần có:**",
+    ...(required.length ? required.map((item: string) => `- ${item}`) : ["- Chưa xác định."]),
+    "",
+    "**Dữ liệu đã có:**",
+    ...(filled.length ? filled.map((item: string) => `- ${item}`) : ["- Chưa đủ slot bắt buộc."]),
+    "",
+    "**Dữ liệu còn thiếu nếu có:**",
+    ...(missing.length ? missing.map((item: string) => `- ${item}`) : ["- Không có slot bắt buộc bị thiếu."]),
+    "",
+    gate.decision_to_solve === "solve"
+      ? "**Kết luận:** Đủ điều kiện để xây mô hình, chọn solver và giải."
+      : "**Kết luận:** Chưa đủ điều kiện để đưa lời giải cuối cùng; cần làm rõ trước.",
+    "",
+  ].join("\n");
+}
+
 /* ═══════════════════════════════════════════════════════════════
    Solver Tab
    ═══════════════════════════════════════════════════════════════ */
@@ -115,13 +421,17 @@ function SolverTab() {
 
       // Check for markdown_report in LP result
       const lpResult = data?.solved?.result;
+      const gateMd = recognitionGateMarkdown(data);
       if (lpResult?.markdown_report) {
-        setMarkdown(lpResult.markdown_report);
+        setMarkdown(gateMd + lpResult.markdown_report);
       } else if (data?.status === "solved") {
         // Generate markdown from the JSON result
-        let md = `# Lời giải\n\n**Status**: ${data.status}\n\n`;
+        let md = gateMd || `# Lời giải\n\n**Status**: ${data.status}\n\n`;
         if (data.solved?.problem_type) {
           md += `**Loại bài toán**: ${data.solved.problem_type}\n\n`;
+        }
+        if (data.problem?.formulation) {
+          md += `### 🤖 Mô hình được AI trích xuất:\n\`\`\`\n${data.problem.formulation}\n\`\`\`\n\n`;
         }
         if (data.solved?.result) {
           md += jsonToMarkdown(data.solved.result);
@@ -131,7 +441,7 @@ function SolverTab() {
         }
         setMarkdown(md);
       } else if (data?.status === "needs_clarification") {
-        let md = `## ⚠️ Cần thêm thông tin\n\n${data.message || ""}\n\n`;
+        let md = `${gateMd}## ⚠️ Cần thêm thông tin\n\n${data.message || ""}\n\n`;
         if (data.questions) {
           md += "### Câu hỏi:\n\n";
           for (const q of data.questions) md += `- ${q}\n`;
@@ -370,6 +680,7 @@ function CriteriaTab() {
 
 export default function EDSSDashboard() {
   const [tab, setTab] = useState<Tab>("solve");
+  const [showHelp, setShowHelp] = useState(false);
 
   return (
     <main className="edss-shell">
@@ -381,7 +692,12 @@ export default function EDSSDashboard() {
             <p>ECE 307 — Techniques for Engineering Decisions</p>
           </div>
         </div>
-        <a href="/" className="edss-btn secondary">← Decision Workbench</a>
+        <div className="edss-header-actions">
+          <button className="edss-btn secondary" onClick={() => setShowHelp(true)}>
+            <HelpCircle size={16} /> Help
+          </button>
+          <a href="/" className="edss-btn secondary">← Decision Workbench</a>
+        </div>
       </header>
 
       <nav className="edss-nav">
@@ -403,6 +719,8 @@ export default function EDSSDashboard() {
       <footer className="edss-footer">
         <p>Good Decision ≠ Lucky Outcome · Solver thật, không LLM tính toán · Mọi bước được audit</p>
       </footer>
+
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
     </main>
   );
 }
