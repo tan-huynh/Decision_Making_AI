@@ -85,16 +85,20 @@ class EDSSProblem(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     probability_tree: dict[str, Any] | None = None
     bayes: dict[str, Any] | None = None
+    diagnostic_decision: dict[str, Any] | None = None
+    forklift_decision: dict[str, Any] | None = None
     independent_probabilities: list[float] | None = None
     resource_allocation: dict[str, Any] | None = None
     annual_demand: float | None = None
     weekly_demand: float | None = None
     order_cost: float | None = None
     holding_cost: float | None = None
+    holding_cost_rate: float | None = None
     shortage_cost: float | None = None
     purchase_cost: float | None = None
     gross_profit_per_unit: float | None = None
     lead_time: float | None = None
+    price_breaks: list[dict[str, float]] | None = None
 
 
 class NaturalProblemRequest(BaseModel):

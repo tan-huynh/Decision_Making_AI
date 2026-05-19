@@ -189,7 +189,7 @@ def _validate_dynamic_programming(problem: dict[str, Any], errors: list[str], wa
 
 
 def _validate_decision_uncertainty(problem: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
-    if problem.get("probability_tree") or problem.get("bayes") or problem.get("independent_probabilities"):
+    if problem.get("probability_tree") or problem.get("bayes") or problem.get("diagnostic_decision") or problem.get("forklift_decision") or problem.get("independent_probabilities"):
         return
     if not problem.get("alternatives"):
         errors.append("Cần ít nhất 2 alternatives.")

@@ -202,15 +202,20 @@ def required_missing_slots(problem_type: str, structured: dict[str, Any]) -> lis
         if not graph.get("edges") and not graph.get("costs"):
             missing.append("nodes_edges_weights")
     elif kind == "inventory_theory":
-        for key in ["annual_demand", "order_cost", "holding_cost"]:
+        for key in ["annual_demand", "order_cost"]:
             if not _has_value(structured, key):
                 missing.append(key)
+        if not _has_value(structured, "holding_cost") and not (
+            _has_value(structured, "holding_cost_rate")
+            and (_has_value(structured, "unit_cost") or _has_value(structured, "purchase_cost"))
+        ):
+            missing.append("holding_cost")
     elif kind == "queueing_theory":
         for key in ["arrival_rate", "service_rate"]:
             if not _has_value(structured, key) and key not in structured.get("queueing", {}):
                 missing.append(key)
     elif kind == "decision_theory":
-        if structured.get("probability_tree") or structured.get("bayes") or structured.get("independent_probabilities"):
+        if structured.get("probability_tree") or structured.get("bayes") or structured.get("diagnostic_decision") or structured.get("forklift_decision") or structured.get("independent_probabilities"):
             return []
         for key in ["alternatives", "states", "payoff_matrix"]:
             if not structured.get(key):

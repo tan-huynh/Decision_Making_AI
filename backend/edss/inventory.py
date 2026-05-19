@@ -319,7 +319,7 @@ def solve_eoq_planned_shortages(
     profit_block = ""
     if purchase_cost and unit_profit > 0:
         profit_block = (
-            "## (e) Annual profit from selling RFG dispensers\n\n"
+            "## (e) Annual profit\n\n"
             "$$\n"
             "CT(Q=Q^*) = C_a + C_s + C_p + C_c = "
             "\\frac{M^2h}{2Q} + \\frac{(Q-M)^2s}{2Q} + K\\frac{D}{Q} + cD\n"
@@ -339,12 +339,11 @@ def solve_eoq_planned_shortages(
         )
     elif purchase_cost:
         profit_block = (
-            "## (e) Annual profit from selling RFG dispensers\n\n"
-            "Không đủ dữ liệu để tính annual profit chắc chắn vì thiếu `gross profit per unit`. "
-            "Cần giá trị gross profit trên mỗi dispenser sold, ví dụ trong sách là `$80`.\n\n"
+            "## (e) Annual profit\n\n"
+            "Không đủ dữ liệu để tính annual profit chắc chắn vì thiếu `gross profit per unit`.\n\n"
         )
     report = (
-        "# BAC Inventory Problem - EOQ with Planned Shortages\n\n"
+        "# Inventory Problem - EOQ with Planned Shortages\n\n"
         "## 1. Dạng mô hình\n\n"
         "Đây là mô hình EOQ cho phép thiếu hàng có kế hoạch/backorder vì đề cho chi phí stockout trên mỗi đơn vị chưa đáp ứng.\n\n"
         "## 2. Tham số\n\n"
@@ -557,14 +556,53 @@ def simulate_stochastic_inventory(
 
 
 def solve_inventory_problem(problem: dict[str, Any]) -> dict[str, Any]:
-    demand = float(problem.get("demand") or problem.get("annual_demand", 0))
-    ordering = float(problem.get("ordering_cost") or problem.get("order_cost", 0))
-    holding = float(problem.get("holding_cost", 0))
-    shortage = float(problem.get("shortage_cost", 0))
-    unit_cost = float(problem.get("unit_cost", 0))
-    
+    def _num(*keys: str, default: float = 0.0) -> float:
+        for key in keys:
+            value = problem.get(key)
+            if value is not None and value != "":
+                return float(value)
+        return default
+
+    demand = _num("demand", "annual_demand")
+    ordering = _num("ordering_cost", "order_cost")
+    holding = _num("holding_cost")
+    holding_rate = _num("holding_cost_rate")
+    shortage = _num("shortage_cost")
+    unit_cost = _num("unit_cost", "purchase_cost")
+    price_breaks = problem.get("price_breaks") or []
+
+    if holding_rate > 1:
+        holding_rate = holding_rate / 100.0
+
+    if holding > 0 and holding_rate == 0 and unit_cost > 0:
+        common_percentage = holding in {10, 12, 15, 18, 20, 22, 25, 30}
+        if holding > 1 and common_percentage:
+            holding_rate = holding / 100.0
+            holding = holding_rate * unit_cost
+
+    if holding_rate > 0 and unit_cost > 0 and holding == 0:
+        holding = holding_rate * unit_cost
+    elif holding > 0 and unit_cost > 0 and holding_rate == 0:
+        holding_rate = holding / unit_cost
+
     if demand <= 0 or ordering <= 0 or holding <= 0:
-        return {"status": "needs_clarification", "missing_data": ["Cần demand, ordering_cost và holding_cost lớn hơn 0 để chạy mô hình EOQ."]}
+        return {"status": "needs_clarification", "missing_data": ["Cần demand, ordering_cost và holding_cost (hoặc holding_cost_rate & unit_cost) lớn hơn 0 để chạy mô hình EOQ."]}
+        
+    if price_breaks and len(price_breaks) > 0:
+        processed_breaks = []
+        for pb in price_breaks:
+            min_q = pb.get("min_qty", 0)
+            uc = pb.get("unit_cost")
+            if not uc:
+                discount = pb.get("discount", 0)
+                if discount > 1:
+                    discount /= 100.0
+                uc = unit_cost * (1 - discount)
+            processed_breaks.append({"min_qty": min_q, "unit_cost": uc})
+        if not any(pb.get("min_qty") == 0 for pb in processed_breaks):
+            processed_breaks.append({"min_qty": 0, "unit_cost": unit_cost})
+        
+        return solve_quantity_discount_eoq(demand, ordering, holding_rate, processed_breaks)
         
     if shortage > 0:
         return solve_eoq_planned_shortages(
@@ -572,7 +610,7 @@ def solve_inventory_problem(problem: dict[str, Any]) -> dict[str, Any]:
             ordering_cost=ordering,
             holding_cost=holding,
             shortage_cost=shortage,
-            unit_profit=float(problem.get("unit_profit", 80)),
+            unit_profit=float(problem.get("unit_profit") or problem.get("gross_profit_per_unit", 80)),
             weekly_demand=demand/52,
             purchase_cost=unit_cost
         )

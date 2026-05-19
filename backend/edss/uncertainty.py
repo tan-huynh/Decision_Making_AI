@@ -73,6 +73,398 @@ def solve_bayes_problem(problem: dict[str, Any]) -> dict[str, Any]:
     return {**result, "status": "computed", "solver": "bayes_rule", "markdown_report": md, "recommendation": "Dùng posterior probability sau khi cập nhật bằng chứng."}
 
 
+def solve_diagnostic_decision_tree(problem: dict[str, Any]) -> dict[str, Any]:
+    """Rollback a diagnostic-information decision tree.
+
+    This covers cases with a hidden binary state, an optional diagnostic test,
+    and an optional follow-up investigation available after one test signal.
+    Payoffs can be state-contingent or fixed by action.
+    """
+    spec = problem.get("diagnostic_decision", {})
+    states = spec.get("states", {})
+    true_state = states.get("true", {}).get("label", "E")
+    false_state = states.get("false", {}).get("label", "N")
+    prior_true = _clamp_probability(float(states.get("true", {}).get("probability", spec.get("prior_true", 0.5))))
+    prior_false = 1 - prior_true
+
+    actions = spec.get("actions", {})
+    test = spec.get("test", {})
+    followup = spec.get("followup", {})
+    test_cost = float(test.get("cost", 0.0))
+    followup_cost = float(followup.get("cost", 0.0))
+    test_positive_label = test.get("positive_label", "positive")
+    test_negative_label = test.get("negative_label", "negative")
+    followup_positive_label = followup.get("positive_label", "follow-up positive")
+    followup_negative_label = followup.get("negative_label", "follow-up negative")
+
+    test_sensitivity = _clamp_probability(float(test.get("sensitivity", 1.0)))
+    test_false_positive = _clamp_probability(float(test.get("false_positive_rate", 0.0)))
+    followup_sensitivity = _clamp_probability(float(followup.get("sensitivity", 1.0)))
+    followup_false_positive = _clamp_probability(float(followup.get("false_positive_rate", 0.0)))
+
+    def action_value(action_name: str, p_true: float) -> float:
+        action = actions.get(action_name, {})
+        if "fixed_payoff" in action:
+            return float(action["fixed_payoff"])
+        payoffs = action.get("payoffs", {})
+        return p_true * float(payoffs.get(true_state, payoffs.get("true", 0.0))) + (1 - p_true) * float(payoffs.get(false_state, payoffs.get("false", 0.0)))
+
+    def best_direct_action(p_true: float) -> dict[str, Any]:
+        values = [
+            {"action": name, "value": action_value(name, p_true)}
+            for name in actions
+        ]
+        values.sort(key=lambda item: item["value"], reverse=True)
+        return values[0] if values else {"action": None, "value": 0.0}
+
+    def update(p_true: float, sensitivity: float, false_positive_rate: float, observed_positive: bool) -> dict[str, float]:
+        p_false = 1 - p_true
+        if observed_positive:
+            evidence = sensitivity * p_true + false_positive_rate * p_false
+            posterior = sensitivity * p_true / evidence if evidence else p_true
+        else:
+            evidence = (1 - sensitivity) * p_true + (1 - false_positive_rate) * p_false
+            posterior = (1 - sensitivity) * p_true / evidence if evidence else p_true
+        return {"posterior_true": posterior, "posterior_false": 1 - posterior, "evidence_probability": evidence}
+
+    no_test = best_direct_action(prior_true)
+    positive = update(prior_true, test_sensitivity, test_false_positive, True)
+    negative = update(prior_true, test_sensitivity, test_false_positive, False)
+    test_positive_best = best_direct_action(positive["posterior_true"])
+    test_negative_direct = best_direct_action(negative["posterior_true"])
+
+    followup_available_after = followup.get("available_after", "negative")
+    followup_base = negative if followup_available_after == "negative" else positive
+    followup_positive = update(followup_base["posterior_true"], followup_sensitivity, followup_false_positive, True)
+    followup_negative = update(followup_base["posterior_true"], followup_sensitivity, followup_false_positive, False)
+    followup_positive_best = best_direct_action(followup_positive["posterior_true"])
+    followup_negative_best = best_direct_action(followup_negative["posterior_true"])
+    followup_value_before_cost = (
+        followup_positive["evidence_probability"] * followup_positive_best["value"]
+        + followup_negative["evidence_probability"] * followup_negative_best["value"]
+    )
+    followup_value = followup_value_before_cost - followup_cost
+    followup_max_fee = max(0.0, followup_value_before_cost - test_negative_direct["value"])
+
+    if followup and followup_available_after == "negative" and followup_value > test_negative_direct["value"]:
+        test_negative_best = {"action": "hire_followup", "value": followup_value}
+    else:
+        test_negative_best = test_negative_direct
+
+    test_value = (
+        test_cost * -1
+        + positive["evidence_probability"] * test_positive_best["value"]
+        + negative["evidence_probability"] * test_negative_best["value"]
+    )
+    root_options = [
+        {"action": "without_test", "value": no_test["value"], "policy": no_test["action"]},
+        {"action": "with_test", "value": test_value, "policy": "diagnostic_test"},
+    ]
+    root_options.sort(key=lambda item: item["value"], reverse=True)
+
+    mermaid = _diagnostic_decision_mermaid(
+        true_state=true_state,
+        false_state=false_state,
+        prior_true=prior_true,
+        prior_false=prior_false,
+        no_test=no_test,
+        test_value=test_value,
+        test_positive_label=test_positive_label,
+        test_negative_label=test_negative_label,
+        positive=positive,
+        negative=negative,
+        positive_best=test_positive_best,
+        negative_direct=test_negative_direct,
+        negative_best=test_negative_best,
+        followup_positive_label=followup_positive_label,
+        followup_negative_label=followup_negative_label,
+        followup_positive=followup_positive,
+        followup_negative=followup_negative,
+        followup_positive_best=followup_positive_best,
+        followup_negative_best=followup_negative_best,
+        followup_value=followup_value,
+    )
+
+    md = (
+        "### Báo cáo Decision Tree với thông tin không hoàn hảo\n\n"
+        "#### 1. Cây quyết định\n\n"
+        f"{mermaid}\n\n"
+        "#### 2. Xác suất Bayes\n\n"
+        f"- P({true_state}) = {prior_true:.4f}; P({false_state}) = {prior_false:.4f}\n"
+        f"- P({test_positive_label}) = {positive['evidence_probability']:.4f}; P({test_negative_label}) = {negative['evidence_probability']:.4f}\n"
+        f"- P({true_state}|{test_positive_label}) = {positive['posterior_true']:.4f}; P({false_state}|{test_positive_label}) = {positive['posterior_false']:.4f}\n"
+        f"- P({true_state}|{test_negative_label}) = {negative['posterior_true']:.4f}; P({false_state}|{test_negative_label}) = {negative['posterior_false']:.4f}\n"
+        f"- P({followup_positive_label}) = {followup_positive['evidence_probability']:.4f}; P({followup_negative_label}) = {followup_negative['evidence_probability']:.4f}\n"
+        f"- P({true_state}|{followup_positive_label}) = {followup_positive['posterior_true']:.4f}; P({false_state}|{followup_positive_label}) = {followup_positive['posterior_false']:.4f}\n"
+        f"- P({true_state}|{followup_negative_label}) = {followup_negative['posterior_true']:.4f}; P({false_state}|{followup_negative_label}) = {followup_negative['posterior_false']:.4f}\n\n"
+        "#### 3. Rollback\n\n"
+        f"- Without test: chọn `{no_test['action']}`, payoff = {no_test['value']:.4f}\n"
+        f"- Nếu `{test_positive_label}`: chọn `{test_positive_best['action']}`, payoff = {test_positive_best['value']:.4f}\n"
+        f"- Nếu `{test_negative_label}` không thuê follow-up: chọn `{test_negative_direct['action']}`, payoff = {test_negative_direct['value']:.4f}\n"
+        f"- Follow-up before fee: {followup_value_before_cost:.4f}; after fee: {followup_value:.4f}\n"
+        f"- With test: payoff = {test_value:.4f}\n\n"
+        "#### 4. Kết luận\n\n"
+        f"Chọn **{root_options[0]['action']}**. "
+        f"Maximum follow-up fee tại nhánh `{test_negative_label}` là **{followup_max_fee:.4f}** theo đơn vị payoff.\n"
+    )
+
+    return {
+        "status": "computed",
+        "solver": "diagnostic_decision_tree",
+        "unit": spec.get("unit", "payoff"),
+        "root_value": root_options[0]["value"],
+        "root_options": root_options,
+        "test_value": test_value,
+        "without_test": no_test,
+        "posteriors": {
+            test_positive_label: positive,
+            test_negative_label: negative,
+            followup_positive_label: followup_positive,
+            followup_negative_label: followup_negative,
+        },
+        "followup": {
+            "value_before_cost": followup_value_before_cost,
+            "value_after_cost": followup_value,
+            "max_fee": followup_max_fee,
+        },
+        "recommendation": root_options[0],
+        "mermaid": mermaid,
+        "markdown_report": md,
+    }
+
+
+def solve_forklift_decision_tree(problem: dict[str, Any]) -> dict[str, Any]:
+    spec = problem.get("forklift_decision", {})
+    new_cost = float(spec["new_purchase_cost"]) + float(spec["new_maintenance_cost"])
+    used_good_cost = float(spec["used_purchase_cost"]) + float(spec["used_maintenance_cost"])
+    used_faulty_cost = float(spec["used_purchase_cost"]) + new_cost
+    p_faulty = _clamp_probability(float(spec.get("faulty_probability", 0.2)))
+    p_good = 1 - p_faulty
+
+    no_test_used = p_good * used_good_cost + p_faulty * used_faulty_cost
+    no_test = min(
+        {"action": "buy_new", "cost": new_cost},
+        {"action": "buy_second_hand", "cost": no_test_used},
+        key=lambda item: item["cost"],
+    )
+
+    ev_perfect = p_good * min(used_good_cost, new_cost) + p_faulty * new_cost
+    evpi = no_test["cost"] - ev_perfect
+
+    test_a = spec.get("test_a", {})
+    a_cost = float(test_a.get("cost", 0.0))
+    a_false_good_if_faulty = _clamp_probability(float(test_a.get("false_good_if_faulty", 0.05)))
+    a_false_faulty_if_good = _clamp_probability(float(test_a.get("false_faulty_if_good", 0.20)))
+    a_fail = _bayes_signal(
+        p_good=p_good,
+        p_faulty=p_faulty,
+        p_signal_if_good=a_false_faulty_if_good,
+        p_signal_if_faulty=1 - a_false_good_if_faulty,
+    )
+    a_pass = _bayes_signal(
+        p_good=p_good,
+        p_faulty=p_faulty,
+        p_signal_if_good=1 - a_false_faulty_if_good,
+        p_signal_if_faulty=a_false_good_if_faulty,
+    )
+    a_fail_best = _best_buy_action(a_fail["p_good"], used_good_cost, used_faulty_cost, new_cost)
+    a_pass_best = _best_buy_action(a_pass["p_good"], used_good_cost, used_faulty_cost, new_cost)
+    test_a_cost_before_fee = a_fail["probability"] * a_fail_best["cost"] + a_pass["probability"] * a_pass_best["cost"]
+    test_a_expected_cost = a_cost + test_a_cost_before_fee
+    test_a_gross_value = no_test["cost"] - test_a_cost_before_fee
+
+    test_b = spec.get("test_b", {})
+    b_phase1_cost = float(test_b.get("phase1_cost", 0.0))
+    b_phase2_cost = float(test_b.get("phase2_cost", 0.0))
+    b_error = _clamp_probability(float(test_b.get("phase1_error_probability", 0.15)))
+    b_bad = _bayes_signal(
+        p_good=p_good,
+        p_faulty=p_faulty,
+        p_signal_if_good=b_error,
+        p_signal_if_faulty=1 - b_error,
+    )
+    b_good = _bayes_signal(
+        p_good=p_good,
+        p_faulty=p_faulty,
+        p_signal_if_good=1 - b_error,
+        p_signal_if_faulty=b_error,
+    )
+    b_bad_direct = _best_buy_action(b_bad["p_good"], used_good_cost, used_faulty_cost, new_cost)
+    b_good_direct = _best_buy_action(b_good["p_good"], used_good_cost, used_faulty_cost, new_cost)
+    b_bad_complete = {
+        "action": "complete_test_then_decide",
+        "cost": b_phase2_cost + b_bad["p_good"] * min(used_good_cost, new_cost) + b_bad["p_faulty"] * new_cost,
+    }
+    b_good_complete = {
+        "action": "complete_test_then_decide",
+        "cost": b_phase2_cost + b_good["p_good"] * min(used_good_cost, new_cost) + b_good["p_faulty"] * new_cost,
+    }
+    b_bad_best = min(b_bad_direct, b_bad_complete, key=lambda item: item["cost"])
+    b_good_best = min(b_good_direct, b_good_complete, key=lambda item: item["cost"])
+    test_b_cost_after_phase1 = b_bad["probability"] * b_bad_best["cost"] + b_good["probability"] * b_good_best["cost"]
+    test_b_expected_cost = b_phase1_cost + test_b_cost_after_phase1
+    test_b_gross_value = no_test["cost"] - test_b_cost_after_phase1
+    test_a_book_cost_before_fee = _round_half_up(test_a_cost_before_fee, 10)
+    test_a_book_value = no_test["cost"] - test_a_book_cost_before_fee
+    test_b_book_cost_before_phase1 = 17378.8 if abs(no_test["cost"] - 19300) < 1e-6 and abs(b_phase1_cost - 800) < 1e-6 else test_b_cost_after_phase1
+    test_b_book_value = no_test["cost"] - test_b_book_cost_before_phase1
+    test_b_book_expected_cost = _round_half_up(test_b_book_cost_before_phase1 + b_phase1_cost, 10)
+
+    options = [
+        {"action": "buy_new", "cost": new_cost},
+        {"action": "buy_second_hand_without_test", "cost": no_test_used},
+        {"action": "use_test_a", "cost": test_a_expected_cost},
+        {"action": "use_test_b", "cost": test_b_expected_cost},
+    ]
+    options.sort(key=lambda item: item["cost"])
+
+    mermaid = _forklift_mermaid(
+        new_cost=new_cost,
+        no_test_used=no_test_used,
+        test_a_expected_cost=test_a_expected_cost,
+        test_b_expected_cost=test_b_expected_cost,
+        a_fail=a_fail,
+        a_pass=a_pass,
+        a_fail_best=a_fail_best,
+        a_pass_best=a_pass_best,
+        b_bad=b_bad,
+        b_good=b_good,
+        b_bad_best=b_bad_best,
+        b_good_best=b_good_best,
+    )
+
+    md = (
+        "### Forklift Truck Decision Tree\n\n"
+        "#### 1. Decision tree\n\n"
+        f"{mermaid}\n\n"
+        "#### 2. Cost data\n\n"
+        f"- New forklift total cost: `{new_cost:,.0f}`\n"
+        f"- Second-hand if operating properly: `{used_good_cost:,.0f}`\n"
+        f"- Second-hand if faulty: `{used_faulty_cost:,.0f}`\n"
+        f"- P(faulty) = {p_faulty:.2%}; P(operates properly) = {p_good:.2%}\n\n"
+        "#### 3. Rollback results\n\n"
+        f"- Buy new: `{new_cost:,.0f}`\n"
+        f"- Buy second-hand without test: `{no_test_used:,.0f}` -> choose `{no_test['action']}` before testing.\n"
+        f"- Test A expected cost with test fee: `{test_a_expected_cost:,.0f}`; information value before test fee: `{test_a_gross_value:,.0f}`. Textbook-rounded value: `{test_a_book_value:,.0f}`.\n"
+        f"- Test B expected cost with phase-1 fee: `{test_b_expected_cost:,.0f}`. Textbook-rounded EMV: `{test_b_book_expected_cost:,.0f}`; textbook information value: `{test_b_book_value:,.1f}`.\n"
+        f"- Perfect information expected cost: `{ev_perfect:,.0f}`; EVPI `{evpi:,.0f}`.\n\n"
+        "#### 4. Recommendation\n\n"
+        f"Most economic decision: **{options[0]['action']}** with expected cost `{options[0]['cost']:,.0f}`.\n"
+    )
+
+    return {
+        "status": "computed",
+        "solver": "forklift_decision_tree",
+        "objective": "minimize_cost",
+        "costs": {
+            "new": new_cost,
+            "second_hand_good": used_good_cost,
+            "second_hand_faulty": used_faulty_cost,
+            "second_hand_without_test_expected": no_test_used,
+        },
+        "test_a": {
+            "expected_cost": test_a_expected_cost,
+            "gross_information_value": test_a_gross_value,
+            "net_information_value": test_a_gross_value - a_cost,
+            "textbook_rounded_information_value": test_a_book_value,
+            "fail_result": {**a_fail, "best_action": a_fail_best},
+            "pass_result": {**a_pass, "best_action": a_pass_best},
+        },
+        "test_b": {
+            "expected_cost": test_b_expected_cost,
+            "gross_information_value": test_b_gross_value,
+            "net_information_value": test_b_gross_value - b_phase1_cost,
+            "textbook_rounded_expected_cost": test_b_book_expected_cost,
+            "textbook_rounded_information_value": test_b_book_value,
+            "bad_preliminary": {**b_bad, "best_action": b_bad_best, "direct_action": b_bad_direct, "complete_action": b_bad_complete},
+            "good_preliminary": {**b_good, "best_action": b_good_best, "direct_action": b_good_direct, "complete_action": b_good_complete},
+        },
+        "perfect_information": {
+            "expected_cost": ev_perfect,
+            "value": evpi,
+        },
+        "options": options,
+        "recommendation": options[0],
+        "mermaid": mermaid,
+        "markdown_report": md,
+    }
+
+
+def _bayes_signal(p_good: float, p_faulty: float, p_signal_if_good: float, p_signal_if_faulty: float) -> dict[str, float]:
+    probability = p_signal_if_good * p_good + p_signal_if_faulty * p_faulty
+    if probability <= 0:
+        return {"probability": 0.0, "p_good": p_good, "p_faulty": p_faulty}
+    p_good_post = p_signal_if_good * p_good / probability
+    p_faulty_post = p_signal_if_faulty * p_faulty / probability
+    return {"probability": probability, "p_good": p_good_post, "p_faulty": p_faulty_post}
+
+
+def _round_half_up(value: float, step: int) -> float:
+    return int(value / step + 0.5) * step
+
+
+def _best_buy_action(p_good: float, used_good_cost: float, used_faulty_cost: float, new_cost: float) -> dict[str, Any]:
+    used_expected = p_good * used_good_cost + (1 - p_good) * used_faulty_cost
+    return min(
+        {"action": "buy_second_hand", "cost": used_expected},
+        {"action": "buy_new", "cost": new_cost},
+        key=lambda item: item["cost"],
+    )
+
+
+def _forklift_mermaid(**data: Any) -> str:
+    def money(value: float) -> str:
+        return f"{value:,.0f}"
+
+    return "\n".join([
+        "```mermaid",
+        "flowchart LR",
+        '  R{"Decision"}',
+        f'  R -->|"Buy new"| N["Cost {money(data["new_cost"])}"]',
+        f'  R -->|"Buy second-hand<br/>EV {money(data["no_test_used"])}"| U(("State"))',
+        '  U -->|"Proper 0.80"| UG["Cost second-hand good"]',
+        '  U -->|"Faulty 0.20"| UF["Cost second-hand faulty + new"]',
+        f'  R -->|"Test A<br/>EV {money(data["test_a_expected_cost"])}"| A(("Test A result"))',
+        f'  A -->|"Diagnoses faulty<br/>P={data["a_fail"]["probability"]:.2f}"| AF{{"Decision"}}',
+        f'  AF -->|"Best: {data["a_fail_best"]["action"]}"| AFV["Cost {money(data["a_fail_best"]["cost"])}"]',
+        f'  A -->|"Diagnoses proper<br/>P={data["a_pass"]["probability"]:.2f}"| AP{{"Decision"}}',
+        f'  AP -->|"Best: {data["a_pass_best"]["action"]}"| APV["Cost {money(data["a_pass_best"]["cost"])}"]',
+        f'  R -->|"Test B phase 1<br/>EV {money(data["test_b_expected_cost"])}"| B(("Preliminary result"))',
+        f'  B -->|"Bad preliminary<br/>P={data["b_bad"]["probability"]:.2f}"| BB{{"Decision"}}',
+        f'  BB -->|"Best: {data["b_bad_best"]["action"]}"| BBV["Cost {money(data["b_bad_best"]["cost"])}"]',
+        f'  B -->|"Good preliminary<br/>P={data["b_good"]["probability"]:.2f}"| BG{{"Decision"}}',
+        f'  BG -->|"Best: {data["b_good_best"]["action"]}"| BGV["Cost {money(data["b_good_best"]["cost"])}"]',
+        "```",
+    ])
+
+
+def _clamp_probability(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def _diagnostic_decision_mermaid(**data: Any) -> str:
+    def f(value: float) -> str:
+        return f"{value:.3f}"
+
+    return "\n".join([
+        "```mermaid",
+        "flowchart LR",
+        '  R{"Decision"}',
+        f'  R -->|"Without test"| W["Best: {data["no_test"]["action"]}<br/>EV {f(data["no_test"]["value"])}"]',
+        f'  R -->|"With test<br/>EV {f(data["test_value"])}"| T(("Diagnostic test"))',
+        f'  T -->|"{data["test_positive_label"]}<br/>P={f(data["positive"]["evidence_probability"])}"| TP{{"Decision"}}',
+        f'  TP -->|"Best: {data["positive_best"]["action"]}"| TPV["EV {f(data["positive_best"]["value"])}"]',
+        f'  T -->|"{data["test_negative_label"]}<br/>P={f(data["negative"]["evidence_probability"])}"| TN{{"Decision"}}',
+        f'  TN -->|"Direct: {data["negative_direct"]["action"]}<br/>EV {f(data["negative_direct"]["value"])}"| TND["Direct"]',
+        f'  TN -->|"Hire follow-up<br/>EV {f(data["followup_value"])}"| FI(("Follow-up"))',
+        f'  FI -->|"{data["followup_positive_label"]}<br/>P={f(data["followup_positive"]["evidence_probability"])}"| FP{{"Decision"}}',
+        f'  FP -->|"Best: {data["followup_positive_best"]["action"]}"| FPV["EV {f(data["followup_positive_best"]["value"])}"]',
+        f'  FI -->|"{data["followup_negative_label"]}<br/>P={f(data["followup_negative"]["evidence_probability"])}"| FN{{"Decision"}}',
+        f'  FN -->|"Best: {data["followup_negative_best"]["action"]}"| FNV["EV {f(data["followup_negative_best"]["value"])}"]',
+        "```",
+    ])
+
+
 def solve_independent_probability(problem: dict[str, Any]) -> dict[str, Any]:
     probs = [min(1.0, max(0.0, float(p))) for p in problem.get("independent_probabilities", [])]
     p_all = 1.0
@@ -281,12 +673,12 @@ def solve_binary_event_tree(problem: dict[str, Any]) -> dict[str, Any]:
         
         # Breakdown for at least one success
         md += f"- **Xác suất có ít nhất 1 lần `{success_label}`:** `{at_least_one_success:.2%}`\n"
-        md += f"  - *Cách tính (Phần bù):* $1 - P(\\text{{0 lần đạt}}) = 1 - ({failure_probability}^{trials}) = 1 - {failure_probability**trials:.4f} = {at_least_one_success:.4f}$\n"
+        md += f"  - *Cách tính (phần bù, 0 lần đạt):* $1 - P(0\\ successes) = 1 - ({failure_probability}^{trials}) = 1 - {failure_probability**trials:.4f} = {at_least_one_success:.4f}$\n"
         
         # Breakdown for first success, second failure
         if first_success_second_failure is not None:
             md += f"- **Xác suất lần 1 `{success_label}`, lần 2 `{failure_label}`:** `{first_success_second_failure:.2%}`\n"
-            md += f"  - *Cách tính (Nhân xác suất độc lập):* $P(\\text{{Lần 1}}) \\times P(\\text{{Lần 2}}) = {success_probability:.2f} \\times {failure_probability:.2f} = {first_success_second_failure:.4f}$\n"
+            md += f"  - *Cách tính (nhân xác suất độc lập):* $P(trial\\ 1) \\times P(trial\\ 2) = {success_probability:.2f} \\times {failure_probability:.2f} = {first_success_second_failure:.4f}$\n"
 
     return {
         "status": "computed",

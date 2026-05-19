@@ -161,6 +161,50 @@ class EDSSEngineTests(unittest.TestCase):
         self.assertAlmostEqual(solved["posterior"], 0.166667, places=5)
         self.assertTrue(result["solved"]["validation"]["is_valid"])
 
+    def test_text_solver_spying_diagnostic_decision_tree(self):
+        text = """
+        GATACA is a firm which undertakes genetic research. Its competitor arrived before it in
+        patenting important discoveries, which led to a loss of $3 million. The Board hypothesizes
+        that Paul Piller is a spy and estimates that the probability of being right is 70%.
+        If they dismiss Paul and he was not a spy, they will lose their best researcher, which can
+        entail a loss of $12 million over the next year. The Board could make Paul do a lie detector
+        test. The cost of this process is estimated at $50,000. The results would not be definitive
+        because it detects only 85% of liars. Should the lie detector results favour Paul, a private
+        investigator could be contracted, which would guarantee a 95% probability of success. The fee
+        would come to $100,000. Solve the decision tree.
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        solved = result["solved"]["result"]
+        self.assertEqual(solved["solver"], "diagnostic_decision_tree")
+        self.assertAlmostEqual(solved["root_value"], -1.141, places=3)
+        self.assertAlmostEqual(solved["test_value"], -1.141, places=3)
+        self.assertAlmostEqual(solved["followup"]["value_after_cost"], -2.694, places=3)
+        self.assertAlmostEqual(solved["followup"]["max_fee"], 0.406, places=3)
+        self.assertIn("```mermaid", solved["markdown_report"])
+
+    def test_text_solver_forklift_decision_tree(self):
+        text = """
+        The Director of Logistics must choose a new electric forklift truck costing USD 25,000
+        or a second-hand forklift truck costing USD 12,500. Maintenance costs of a new forklift
+        for the next 10 years are USD 1,000, whereas second-hand maintenance costs are double.
+        The proportion of faulty second-hand equipment is 20%. TEST A costs USD 1,000 and its
+        diagnosis offers a percentage of failures of 5% if it is faulty, and of 20% if it operates
+        properly. TEST B has a first phase costing USD 800 with probability of error 15%, and a
+        second phase costing USD 700 to be absolutely sure.
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        solved = result["solved"]["result"]
+        self.assertEqual(solved["solver"], "forklift_decision_tree")
+        self.assertEqual(solved["recommendation"]["action"], "use_test_b")
+        self.assertAlmostEqual(solved["costs"]["second_hand_without_test_expected"], 19300)
+        self.assertAlmostEqual(solved["test_a"]["textbook_rounded_information_value"], 530)
+        self.assertAlmostEqual(solved["test_b"]["textbook_rounded_expected_cost"], 18180)
+        self.assertAlmostEqual(solved["test_b"]["textbook_rounded_information_value"], 1921.2)
+        self.assertAlmostEqual(solved["perfect_information"]["value"], 2500)
+        self.assertIn("```mermaid", solved["markdown_report"])
+
     def test_text_solver_expected_value_problem(self):
         text = """
         Expected value decision.

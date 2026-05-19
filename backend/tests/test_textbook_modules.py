@@ -2,10 +2,11 @@ import math
 import unittest
 
 from edss.classifier import classify_problem
-from edss.inventory import solve_eoq, solve_newsvendor
+from edss.inventory import solve_eoq, solve_inventory_problem, solve_newsvendor
 from edss.markov import absorbing_chain, steady_state
 from edss.module_registry import module_coverage_report
 from edss.queueing import solve_mm1, solve_mmc
+from edss.router import solve_problem
 from edss.text_solver import solve_text_problem
 from edss.utility import exponential_certainty_equivalent
 
@@ -21,6 +22,64 @@ class TextbookModuleTests(unittest.TestCase):
         self.assertEqual(result["status"], "optimal")
         self.assertAlmostEqual(result["order_quantity"], math.sqrt(50000), places=5)
         self.assertIn("Báo cáo EOQ", result["markdown_report"])
+
+    def test_inventory_solver_accepts_holding_rate_and_purchase_cost_alias(self):
+        result = solve_inventory_problem({
+            "annual_demand": 3900,
+            "order_cost": 100,
+            "holding_cost_rate": 0.20,
+            "purchase_cost": 320,
+            "shortage_cost": 50,
+            "gross_profit_per_unit": 80,
+        })
+        self.assertEqual(result["status"], "optimal")
+        self.assertEqual(result["model"], "EOQ_with_planned_shortages")
+        self.assertAlmostEqual(result["order_quantity"], 166.695831, places=5)
+        self.assertAlmostEqual(result["annual_profit_after_inventory_cost"], 307320.818785, places=4)
+
+    def test_inventory_solver_interprets_common_percentage_holding_cost(self):
+        result = solve_inventory_problem({
+            "annual_demand": 3900,
+            "order_cost": 100,
+            "holding_cost": 20,
+            "purchase_cost": 320,
+            "shortage_cost": 50,
+            "gross_profit_per_unit": 80,
+        })
+        self.assertEqual(result["status"], "optimal")
+        self.assertAlmostEqual(result["maximum_inventory"], 73.112206, places=5)
+
+    def test_inventory_theory_gate_accepts_rate_plus_purchase_cost(self):
+        solved = solve_problem({
+            "context": {
+                "description": "Inventory EOQ with stockout, annual demand, order cost, purchase cost, and holding cost rate.",
+            },
+            "problem_type": "inventory_theory",
+            "annual_demand": 3900,
+            "order_cost": 100,
+            "holding_cost_rate": 0.20,
+            "purchase_cost": 320,
+            "shortage_cost": 50,
+            "gross_profit_per_unit": 80,
+        })
+        self.assertEqual(solved["result"]["status"], "optimal")
+        self.assertAlmostEqual(solved["result"]["order_quantity"], 166.695831, places=5)
+
+    def test_inventory_router_uses_rate_for_llm_normalized_inventory_type(self):
+        solved = solve_problem({
+            "context": {
+                "description": "Inventory EOQ with stockout, annual demand, order cost, purchase cost, and holding cost rate.",
+            },
+            "problem_type": "inventory",
+            "annual_demand": 3900,
+            "order_cost": 100,
+            "holding_cost_rate": 0.20,
+            "purchase_cost": 320,
+            "shortage_cost": 50,
+            "gross_profit_per_unit": 80,
+        })
+        self.assertEqual(solved["result"]["status"], "optimal")
+        self.assertAlmostEqual(solved["result"]["order_quantity"], 166.695831, places=5)
 
     def test_inventory_newsvendor_critical_ratio(self):
         result = solve_newsvendor(unit_cost=5, selling_price=10, salvage_value=2)

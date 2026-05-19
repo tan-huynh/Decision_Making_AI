@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, BrainCircuit, Download, ImageDown, Maximize2, Minimize2, Plus, RefreshCw, Save, Sparkles, Trash2 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import mermaid from "mermaid";
 import DecisionChart from "@/components/DecisionChart";
 import { defaultDecision } from "@/lib/defaultDecision";
@@ -196,6 +198,24 @@ function MermaidView({ chart }: { chart: string }) {
   return <div ref={ref} className="mermaid-wrapper" />;
 }
 
+function normalizeMermaidChart(value: string): string {
+  return value
+    .replace(/^\s*```mermaid\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+}
+
+function isMermaidChart(value: string): boolean {
+  return /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|mindmap|timeline)\b/i.test(
+    normalizeMermaidChart(value)
+  );
+}
+
+function markdownUrlTransform(url: string): string {
+  if (/^data:image\/(?:svg\+xml|png|jpeg|jpg|webp);/i.test(url)) return url;
+  return defaultUrlTransform(url);
+}
+
 function recognitionGateMarkdown(data: EngineeringResult): string {
   const gate = data.recognition_gate;
   if (!gate) return "";
@@ -290,12 +310,23 @@ function EngineeringSolutionView({ data }: { data: EngineeringResult }) {
   return (
     <div className="md-view" style={{ marginTop: 16 }}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        urlTransform={markdownUrlTransform}
         components={{
+          pre({ children, ...props }) {
+            const raw = String((children as any)?.props?.children ?? "");
+            const className = String((children as any)?.props?.className ?? "");
+            if (className.includes("language-mermaid") || isMermaidChart(raw)) {
+              return <MermaidView chart={normalizeMermaidChart(raw)} />;
+            }
+            return <pre {...props}>{children}</pre>;
+          },
           code({ className, children, ...props }) {
             const match = /language-(\w+)/.exec(className || "");
-            if (match?.[1] === "mermaid") {
-              return <MermaidView chart={String(children).replace(/\n$/, "")} />;
+            const raw = String(children).replace(/\n$/, "");
+            if (match?.[1] === "mermaid" || isMermaidChart(raw)) {
+              return <MermaidView chart={normalizeMermaidChart(raw)} />;
             }
             return (
               <code className={className} {...props}>

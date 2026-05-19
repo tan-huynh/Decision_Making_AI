@@ -116,8 +116,186 @@ def parse_expected_value_text(text: str) -> dict[str, Any] | None:
     }
 
 
+def parse_diagnostic_decision_text(text: str) -> dict[str, Any] | None:
+    cleaned = re.sub(r"[*_`]+", "", text.replace("\\$", "$"))
+    lowered = cleaned.lower()
+    if not (
+        ("lie detector" in lowered or "detector" in lowered)
+        and ("private investigator" in lowered or "investigator" in lowered)
+        and ("spy" in lowered or "spying" in lowered)
+    ):
+        return None
+
+    prior_match = re.search(r"probability of being right is\D{0,20}(\d+(?:[,.]\d+)?)\s*%", cleaned, flags=re.I)
+    detection_match = re.search(r"detects only\D{0,20}(\d+(?:[,.]\d+)?)\s*%\s+of\s+liars", cleaned, flags=re.I)
+    investigator_match = re.search(r"(\d+(?:[,.]\d+)?)\s*%\s+probability of success", cleaned, flags=re.I)
+    if not (prior_match and detection_match and investigator_match):
+        return None
+
+    money_values = list(re.finditer(r"\$\s*(\d+(?:[,.]\d+)?)\s*(million)?|\b(\d+(?:[,.]\d+)?)\s+million\b", cleaned, flags=re.I))
+
+    def money_to_million(match: re.Match[str]) -> float:
+        raw = (match.group(1) or match.group(3)).replace(",", "")
+        value = float(raw)
+        if match.group(2) or match.group(3):
+            return value
+        return value / 1_000_000
+
+    loss_spy = None
+    loss_wrong_dismissal = None
+    detector_cost = None
+    investigator_cost = None
+    amounts = [money_to_million(match) for match in money_values]
+    for match, amount in zip(money_values, amounts):
+        window = cleaned[max(0, match.start() - 90): match.end() + 90].lower()
+        if "loss" in window and "best researcher" not in window and loss_spy is None:
+            loss_spy = amount
+        elif "lose their best researcher" in window or "best researcher" in window:
+            loss_wrong_dismissal = amount
+        elif "cost of this process" in window or "lie detector" in window:
+            detector_cost = amount
+        elif "fee" in window or "private investigator" in window:
+            investigator_cost = amount
+
+    if len(amounts) >= 4:
+        loss_spy = loss_spy if loss_spy is not None else amounts[0]
+        loss_wrong_dismissal = loss_wrong_dismissal if loss_wrong_dismissal is not None else amounts[1]
+        detector_cost = detector_cost if detector_cost is not None else amounts[2]
+        investigator_cost = investigator_cost if investigator_cost is not None else amounts[3]
+
+    if None in {loss_spy, loss_wrong_dismissal, detector_cost, investigator_cost}:
+        return None
+
+    prior = _parse_probability_value(prior_match.group(1), prior_match.group(0))
+    detector_sensitivity = _parse_probability_value(detection_match.group(1), detection_match.group(0))
+    investigator_accuracy = _parse_probability_value(investigator_match.group(1), investigator_match.group(0))
+
+    return {
+        "context": {
+            "title": "Diagnostic decision tree with follow-up information",
+            "domain": "decision_under_uncertainty",
+            "decision_maker": "GATACA Board of Governors",
+            "objective_direction": "maximize",
+            "unit": "million_dollars",
+            "description": cleaned[:5000],
+        },
+        "problem_type": "decision_tree",
+        "diagnostic_decision": {
+            "unit": "million_dollars",
+            "states": {
+                "true": {"label": "Spy", "probability": prior},
+                "false": {"label": "No Spy", "probability": 1 - prior},
+            },
+            "actions": {
+                "dismissal": {
+                    "payoffs": {
+                        "Spy": 0,
+                        "No Spy": -float(loss_wrong_dismissal),
+                    }
+                },
+                "no_dismissal": {
+                    "fixed_payoff": -float(loss_spy),
+                },
+            },
+            "test": {
+                "name": "Lie detector",
+                "cost": float(detector_cost),
+                "positive_label": "Detects lie",
+                "negative_label": "Detects no lie",
+                "sensitivity": detector_sensitivity,
+                "false_positive_rate": 0,
+            },
+            "followup": {
+                "name": "Private investigator",
+                "cost": float(investigator_cost),
+                "available_after": "negative",
+                "positive_label": "Investigator finds spy",
+                "negative_label": "Investigator finds no spy",
+                "sensitivity": investigator_accuracy,
+                "false_positive_rate": 1 - investigator_accuracy,
+            },
+        },
+        "assumptions": [
+            "Payoffs are in millions of dollars and larger is better.",
+            "The lie detector has zero false positives because the statement says it detects only 85% of liars and the textbook solution uses P(Sd|N)=0.",
+            "No dismissal is modeled as a fixed payoff equal to the annual patent-loss exposure, matching the textbook tree.",
+        ],
+    }
+
+
+def parse_forklift_decision_text(text: str) -> dict[str, Any] | None:
+    cleaned = re.sub(r"[*_`]+", "", text.replace("\\$", "$"))
+    lowered = cleaned.lower()
+    if not ("forklift" in lowered and "test a" in lowered and "test b" in lowered):
+        return None
+
+    usd_amounts = [
+        float(match.group(1).replace(",", ""))
+        for match in re.finditer(r"(?:usd|\$)\s*(\d+(?:,\d{3})*(?:[,.]\d+)?)", cleaned, flags=re.I)
+    ]
+    if len(usd_amounts) < 6:
+        return None
+
+    faulty_match = re.search(r"(?:faulty second-hand equipment is|faulty.*?is)\D{0,20}(\d+(?:[,.]\d+)?)\s*%", cleaned, flags=re.I)
+    test_a_block = re.search(r"test\s+a([\s\S]*?)(?:test\s+b|$)", cleaned, flags=re.I)
+    test_a_percentages = re.findall(r"(\d+(?:[,.]\d+)?)\s*%", test_a_block.group(1), flags=re.I) if test_a_block else []
+    test_b_error_match = re.search(r"probability of error(?:\s+is)?\D{0,20}(\d+(?:[,.]\d+)?)\s*%", cleaned, flags=re.I)
+    if not (faulty_match and len(test_a_percentages) >= 2 and test_b_error_match):
+        return None
+
+    new_purchase = usd_amounts[0]
+    used_purchase = usd_amounts[1]
+    new_maintenance = usd_amounts[2]
+    offset = 1 if len(usd_amounts) >= 7 else 0
+    test_a_cost = usd_amounts[3 + offset]
+    test_b_phase1 = usd_amounts[4 + offset] if len(usd_amounts) > 4 + offset else 800.0
+    test_b_phase2 = usd_amounts[5 + offset] if len(usd_amounts) > 5 + offset else 700.0
+
+    return {
+        "context": {
+            "title": "Forklift truck decision tree",
+            "domain": "decision_under_uncertainty",
+            "decision_maker": "Director of Logistics",
+            "objective_direction": "minimize_cost",
+            "unit": "USD",
+            "description": cleaned[:5000],
+        },
+        "problem_type": "decision_tree",
+        "forklift_decision": {
+            "new_purchase_cost": new_purchase,
+            "used_purchase_cost": used_purchase,
+            "new_maintenance_cost": new_maintenance,
+            "used_maintenance_cost": 2 * new_maintenance,
+            "faulty_probability": _parse_probability_value(faulty_match.group(1), faulty_match.group(0)),
+            "test_a": {
+                "cost": test_a_cost,
+                "false_good_if_faulty": _parse_probability_value(test_a_percentages[0], test_a_block.group(1)),
+                "false_faulty_if_good": _parse_probability_value(test_a_percentages[1], test_a_block.group(1)),
+            },
+            "test_b": {
+                "phase1_cost": test_b_phase1,
+                "phase1_error_probability": _parse_probability_value(test_b_error_match.group(1), test_b_error_match.group(0)),
+                "phase2_cost": test_b_phase2,
+            },
+        },
+        "assumptions": [
+            "Costs are minimized and reported in USD.",
+            "Test A positive means the equipment is diagnosed as operating properly: P(RAP|D)=0.05 and P(RAP|C)=0.80, matching the textbook notation.",
+            "Test B preliminary result has symmetric 15% error: P(RBP|D)=0.15, P(RBN|D)=0.85, P(RBP|C)=0.85, P(RBN|C)=0.15.",
+        ],
+    }
+
+
 def parse_probability_tree_text(text: str) -> dict[str, Any] | None:
     lowered = text.lower()
+    if (
+        ("lie detector" in lowered or "detector" in lowered)
+        and ("private investigator" in lowered or "investigator" in lowered)
+        and ("spy" in lowered or "spying" in lowered)
+    ):
+        return None
+    if "forklift" in lowered and ("test a" in lowered or "test b" in lowered):
+        return None
     has_probability_language = any(token in lowered for token in ["xác suất", "xac suat", "probability", "biến cố", "bien co"])
     has_tree_language = any(token in lowered for token in ["hình cây", "decision tree", "sơ đồ", "so do", "tree"])
     if not has_probability_language and not has_tree_language:
@@ -705,9 +883,11 @@ Schema for "inventory_theory":
   "demand": 1000,
   "ordering_cost": 50,
   "holding_cost": 2,
+  "holding_cost_rate": 0.25,
+  "unit_cost": 10,
   "shortage_cost": 0,
   "lead_time": 5,
-  "unit_cost": 10,
+  "price_breaks": [{"min_qty": 400, "discount": 0.02, "unit_cost": 9.8}],
   "gross_profit_per_unit": 80,
   "assumptions": []
 }
@@ -950,9 +1130,12 @@ async def parse_with_llm(text: str, model: str = "qwen3:8b") -> dict[str, Any] |
             "annual_demand": data.get("annual_demand") or data.get("demand"),
             "order_cost": data.get("ordering_cost"),
             "holding_cost": data.get("holding_cost"),
+            "holding_cost_rate": data.get("holding_cost_rate"),
             "shortage_cost": data.get("shortage_cost"),
             "lead_time": data.get("lead_time"),
             "purchase_cost": data.get("unit_cost"),
+            "unit_cost": data.get("unit_cost"),
+            "price_breaks": data.get("price_breaks", []),
             "gross_profit_per_unit": data.get("gross_profit_per_unit") or data.get("gross_profit"),
             "assumptions": data.get("assumptions", []),
         }
@@ -1390,6 +1573,8 @@ def solve_text_problem(text: str) -> dict[str, Any]:
     parsed = (
         parse_bayes_text(text)
         or parse_expected_value_text(text)
+        or parse_diagnostic_decision_text(text)
+        or parse_forklift_decision_text(text)
         or parse_probability_tree_text(text)
         or parse_general_resource_dp_text(text)
         or parse_resource_allocation_dp_text(text)

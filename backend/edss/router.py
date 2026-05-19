@@ -13,13 +13,12 @@ from .audit import create_audit_trail, log_step
 from .classifier import classify_problem, missing_data_questions
 from .dynamic_programming import solve_finite_horizon_dp, solve_resource_allocation_dp
 from .linear_programming import solve_lp
-from .inventory import solve_eoq, solve_eoq_planned_shortages
 from .model_validator import validate_model
 from .multiobjective import pareto_frontier, weighted_score
 from .network import solve_shortest_path, solve_transportation, solve_max_flow, solve_min_cost_flow
 from .risk import risk_from_simulation, value_at_risk
 from .sensitivity_engine import sensitivity_analysis
-from .uncertainty import expected_payoff, rollback_decision_tree, simulate_payoffs, solve_bayes_problem, solve_binary_event_tree, solve_independent_probability, value_of_information
+from .uncertainty import expected_payoff, rollback_decision_tree, simulate_payoffs, solve_bayes_problem, solve_binary_event_tree, solve_diagnostic_decision_tree, solve_forklift_decision_tree, solve_independent_probability, value_of_information
 from .voi_engine import compute_voi_from_problem
 from .or_pipeline import classify_with_taxonomy, recognition_gate
 
@@ -66,6 +65,10 @@ def build_mathematical_model(problem: dict[str, Any]) -> dict[str, Any]:
             model["formulation"] = "Binary event tree: P(path)=Π branch probabilities; P(at least one success)=1-(1-p)^n."
         elif problem.get("bayes"):
             model["formulation"] = "Bayes: P(H|E)=P(E|H)P(H)/[P(E|H)P(H)+P(E|¬H)P(¬H)]."
+        elif problem.get("diagnostic_decision"):
+            model["formulation"] = "Diagnostic decision tree: prior → imperfect test → posterior probabilities → optional follow-up information → rollback expected payoff."
+        elif problem.get("forklift_decision"):
+            model["formulation"] = "Forklift decision tree: choose new/used/test; use Bayes posteriors for test results; rollback minimum expected cost and information value."
         elif problem.get("independent_probabilities"):
             model["formulation"] = "Independent events: P(all)=Πp_i; P(at least one)=1-Π(1-p_i)."
         else:
@@ -137,24 +140,8 @@ def solve_problem(problem: dict[str, Any]) -> dict[str, Any]:
     elif kind in ("min_cost_flow", "transshipment", "network_flow"):
         result = solve_min_cost_flow(problem.get("graph", {}))
     elif kind == "inventory":
-        annual_demand = problem.get("annual_demand")
-        order_cost = problem.get("order_cost")
-        holding_cost = problem.get("holding_cost")
-        shortage_cost = problem.get("shortage_cost")
-        if annual_demand and order_cost and holding_cost and shortage_cost:
-            result = solve_eoq_planned_shortages(
-                annual_demand=float(annual_demand),
-                ordering_cost=float(order_cost),
-                holding_cost=float(holding_cost),
-                shortage_cost=float(shortage_cost),
-                unit_profit=float(problem.get("gross_profit_per_unit") or 0),
-                weekly_demand=float(problem["weekly_demand"]) if problem.get("weekly_demand") else None,
-                purchase_cost=float(problem["purchase_cost"]) if problem.get("purchase_cost") else None,
-            )
-        elif annual_demand and order_cost and holding_cost:
-            result = solve_eoq(float(annual_demand), float(order_cost), float(holding_cost))
-        else:
-            result = {"status": "needs_clarification", "missing_data": missing_data_questions(problem)}
+        from .inventory import solve_inventory_problem
+        result = solve_inventory_problem(problem)
     elif kind == "dynamic_programming":
         if problem.get("resource_allocation"):
             spec = problem["resource_allocation"]
@@ -171,6 +158,10 @@ def solve_problem(problem: dict[str, Any]) -> dict[str, Any]:
             result = solve_binary_event_tree(problem)
         elif problem.get("bayes"):
             result = solve_bayes_problem(problem)
+        elif problem.get("diagnostic_decision"):
+            result = solve_diagnostic_decision_tree(problem)
+        elif problem.get("forklift_decision"):
+            result = solve_forklift_decision_tree(problem)
         elif problem.get("independent_probabilities"):
             result = solve_independent_probability(problem)
         else:
