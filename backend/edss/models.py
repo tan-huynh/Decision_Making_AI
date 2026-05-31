@@ -79,6 +79,7 @@ class EDSSProblem(BaseModel):
     payoff_matrix: list[EDSSPayoffCell] = Field(default_factory=list)
     decision_tree: list[EDSSDecisionNode] = Field(default_factory=list)
     graph: dict[str, Any] = Field(default_factory=dict)
+    game: dict[str, Any] | None = None
     assignment_costs: list[list[float]] = Field(default_factory=list)
     stages: list[dict[str, Any]] = Field(default_factory=list)
     objectives: list[dict[str, Any]] = Field(default_factory=list)
@@ -86,9 +87,27 @@ class EDSSProblem(BaseModel):
     probability_tree: dict[str, Any] | None = None
     bayes: dict[str, Any] | None = None
     diagnostic_decision: dict[str, Any] | None = None
+    imperfect_information_decision: dict[str, Any] | None = None
     forklift_decision: dict[str, Any] | None = None
     independent_probabilities: list[float] | None = None
     resource_allocation: dict[str, Any] | None = None
+    inventory_dp: dict[str, Any] | None = None
+    periods: int | None = None
+    demands: list[float] | None = None
+    max_inventory: int | None = None
+    initial_inventory: int | None = None
+    max_order: int | None = None
+    fixed_order_cost: float | None = None
+    queueing: dict[str, Any] | None = None
+    arrival_rate: float | None = None
+    service_rate: float | None = None
+    servers: int | None = None
+    queue_capacity: int | None = None
+    population_size: int | None = None
+    waiting_cost: float | None = None
+    service_cost: float | None = None
+    optimize_servers: bool | None = None
+    max_servers: int | None = None
     annual_demand: float | None = None
     weekly_demand: float | None = None
     order_cost: float | None = None
@@ -99,6 +118,29 @@ class EDSSProblem(BaseModel):
     gross_profit_per_unit: float | None = None
     lead_time: float | None = None
     price_breaks: list[dict[str, float]] | None = None
+    ip: dict[str, Any] | None = None
+    c: list[float] | None = None
+    A_ub: list[list[float]] | None = None
+    b_ub: list[float] | None = None
+    A_eq: list[list[float]] | None = None
+    b_eq: list[float] | None = None
+    integrality: list[int] | None = None
+    nlp: dict[str, Any] | None = None
+    variable_names: list[str] | None = None
+    initial: list[float] | None = None
+    bounds: list[tuple[float | None, float | None]] | None = None
+    sense: str | None = None
+    markov: dict[str, Any] | None = None
+    markov_chain: dict[str, Any] | None = None
+    markov_states: list[Any] | None = None
+    transition_matrix: list[list[float]] | None = None
+    initial_distribution: list[float] | None = None
+    requested_outputs: list[str] | None = None
+    absorbing_states: list[Any] | None = None
+    state_costs: list[Any] | None = None
+    target_state_for_first_passage: str | int | None = None
+    n_steps: int | None = None
+    time_step: str | None = None
 
 
 class NaturalProblemRequest(BaseModel):

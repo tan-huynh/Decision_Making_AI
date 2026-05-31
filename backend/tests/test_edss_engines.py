@@ -7,6 +7,17 @@ from edss.network import solve_shortest_path
 from edss.router import solve_problem
 from edss.text_solver import solve_text_problem
 from edss.uncertainty import expected_payoff, value_of_information
+from edss.linear_solver import recognize_linear_programming, solve_linear_programming_problem
+from edss.markov_solver import recognize_markov_processes, solve_markov_processes_problem
+from edss.mermaid_visualization import mermaid_visualization_gate
+from edss.game_theory import solve_game_theory
+from edss.dp_solver import recognize_dynamic_programming, solve_dynamic_programming_problem
+from edss.decision_theory import recognize_decision_theory, solve_decision_theory_problem
+from edss.queueing_solver import recognize_queueing_theory, solve_queueing_problem
+from edss.inventory_solver import recognize_inventory_theory, solve_inventory_theory_problem
+from edss.integer_solver import recognize_integer_programming, solve_integer_programming_problem
+from edss.network_solver import recognize_network_modelling, solve_network_modelling_problem
+from edss.nonlinear_solver import recognize_nonlinear_programming, solve_nonlinear_programming_problem
 
 
 def production_mix_problem():
@@ -34,6 +45,41 @@ class EDSSEngineTests(unittest.TestCase):
         self.assertAlmostEqual(result["solution"]["x_A"], 40)
         self.assertAlmostEqual(result["solution"]["x_B"], 20)
         self.assertAlmostEqual(result["objective_value"], 2200)
+
+    def test_linear_programming_recognition_gate_product_mix(self):
+        problem = production_mix_problem()
+        recognition = recognize_linear_programming(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertEqual(recognition["subtype"], "LP_GRAPHICAL_2D")
+        solved = solve_linear_programming_problem(problem)
+        self.assertEqual(solved["status"], "optimal")
+        self.assertAlmostEqual(solved["objective_value"], 2200)
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_linear_programming_gate_redirects_integer_variables(self):
+        problem = production_mix_problem()
+        problem["variables"][0]["variable_type"] = "integer"
+        result = solve_linear_programming_problem(problem)
+        self.assertEqual(result["status"], "redirect_required")
+        self.assertEqual(result["target_agent"], "integer_programming")
+
+    def test_linear_programming_gate_redirects_nonlinear_objective(self):
+        problem = production_mix_problem()
+        problem["objective"] = {"sense": "maximize", "expression": "x_A * x_B"}
+        result = solve_linear_programming_problem(problem)
+        self.assertEqual(result["status"], "redirect_required")
+        self.assertEqual(result["target_agent"], "nonlinear_programming")
+
+    def test_linear_programming_gate_blocks_missing_constraints(self):
+        problem = {
+            "context": {"description": "Linear programming product mix."},
+            "problem_type": "linear_programming",
+            "variables": [{"name": "x", "lower_bound": 0}],
+            "objective": {"sense": "maximize", "coefficients": {"x": 1}},
+        }
+        result = solve_linear_programming_problem(problem)
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("constraints", result["missing_data"])
 
     def test_assignment_solver(self):
         result = solve_assignment([[9, 2, 7], [6, 4, 3], [5, 8, 1]])
@@ -69,6 +115,43 @@ class EDSSEngineTests(unittest.TestCase):
         expected = expected_payoff(problem)
         self.assertEqual(expected["recommendation"], "B")
         self.assertGreater(value_of_information(problem)["EVPI"], 0)
+
+    def test_decision_theory_recognition_gate_basic_emv(self):
+        problem = {
+            "context": {"description": "A firm must choose one investment under risk.", "objective_direction": "maximize"},
+            "problem_type": "decision_tree",
+            "alternatives": [{"name": "A"}, {"name": "B"}],
+            "states": [{"name": "High", "probability": 0.4}, {"name": "Low", "probability": 0.6}],
+            "payoff_matrix": [
+                {"alternative": "A", "state": "High", "payoff": 100},
+                {"alternative": "A", "state": "Low", "payoff": 10},
+                {"alternative": "B", "state": "High", "payoff": 70},
+                {"alternative": "B", "state": "Low", "payoff": 50},
+            ],
+        }
+        recognition = recognize_decision_theory(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertEqual(recognition["subtype"], "DT_EMV_BASIC")
+        solved = solve_decision_theory_problem(problem)
+        self.assertEqual(solved["solver"], "decision_theory_basic_emv")
+        self.assertEqual(solved["recommendation"], "B")
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_decision_theory_gate_blocks_missing_payoff_pair(self):
+        problem = {
+            "context": {"description": "A company must choose an alternative under risk."},
+            "problem_type": "decision_tree",
+            "alternatives": [{"name": "A"}, {"name": "B"}],
+            "states": [{"name": "S1", "probability": 0.5}, {"name": "S2", "probability": 0.5}],
+            "payoff_matrix": [
+                {"alternative": "A", "state": "S1", "payoff": 1},
+                {"alternative": "A", "state": "S2", "payoff": 2},
+                {"alternative": "B", "state": "S1", "payoff": 3},
+            ],
+        }
+        result = solve_decision_theory_problem(problem)
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("payoff_or_cost(B,S2)", result["missing_data"])
 
     def test_router_and_classifier(self):
         classification = classify_problem("production mix with labor capacity and profit")
@@ -130,6 +213,328 @@ class EDSSEngineTests(unittest.TestCase):
         self.assertEqual(returns, [[0.0, 15.0, 40.0, 65.0], [0.0, 30.0, 45.0, 55.0], [0.0, 20.0, 35.0, 60.0]])
         self.assertEqual(result["solved"]["result"]["objective_value"], 155)
         self.assertEqual([item["tons"] for item in result["solved"]["result"]["allocation"]], [3, 1, 3])
+
+    def test_dynamic_programming_recognition_gate_resource_allocation(self):
+        problem = {
+            "context": {"description": "Allocate 4 hours to two projects by dynamic programming."},
+            "problem_type": "dynamic_programming",
+            "resource_allocation": {
+                "total_resource": 4,
+                "resource_name": "hours",
+                "sense": "maximize",
+                "stage_returns": [[0, 2, 5, 6, 7], [0, 3, 4, 7, 9]],
+            },
+        }
+        recognition = recognize_dynamic_programming(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertGreaterEqual(recognition["confidence"], 0.85)
+        self.assertEqual(recognition["transition_function"], "s_{n+1} = s_n - x_n")
+        solved = solve_dynamic_programming_problem(problem)
+        self.assertEqual(solved["status"], "optimal")
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_dynamic_programming_gate_blocks_incomplete_stage_model(self):
+        problem = {
+            "context": {"description": "Dynamic programming with stages and states but no transition."},
+            "problem_type": "dynamic_programming",
+            "stages": [{"states": ["S0"], "actions": ["A"]}],
+        }
+        result = solve_dynamic_programming_problem(problem)
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("stage_1.transitions", result["missing_data"])
+
+    def test_queueing_recognition_gate_mm1(self):
+        problem = {
+            "context": {"description": "M/M/1 queue with Poisson arrivals and exponential service.", "unit": "hour"},
+            "problem_type": "queueing_theory",
+            "arrival_rate": 2,
+            "service_rate": 3,
+            "servers": 1,
+        }
+        recognition = recognize_queueing_theory(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertEqual(recognition["subtype"], "QT_MM1_INFINITE")
+        solved = solve_queueing_problem(problem)
+        self.assertEqual(solved["status"], "stable")
+        self.assertAlmostEqual(solved["L"], 2)
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_mermaid_visualization_gate_and_router_queue_diagram(self):
+        problem = {
+            "context": {"description": "Vẽ hàng đợi M/M/1 with Poisson arrivals and exponential service.", "unit": "hour"},
+            "problem_type": "queueing_theory",
+            "arrival_rate": 2,
+            "service_rate": 3,
+            "servers": 1,
+        }
+        gate = mermaid_visualization_gate(problem, "queueing_theory")
+        self.assertTrue(gate["needs_mermaid"])
+        self.assertEqual(gate["diagram_type"], "queue_structure")
+        solved = solve_problem(problem)
+        self.assertIn("```mermaid", solved["result"]["markdown_report"])
+        self.assertIn("Single server", solved["result"]["markdown_report"])
+
+    def test_queueing_cost_optimization(self):
+        problem = {
+            "context": {"description": "Choose number of cashiers for an M/M/s queue.", "unit": "hour"},
+            "problem_type": "queueing_theory",
+            "arrival_rate": 4,
+            "service_rate": 3,
+            "optimize_servers": True,
+            "waiting_cost": 10,
+            "service_cost": 20,
+            "max_servers": 5,
+        }
+        solved = solve_queueing_problem(problem)
+        self.assertEqual(solved["status"], "optimal")
+        self.assertGreaterEqual(solved["optimal_servers"], 2)
+        self.assertIn("options", solved)
+
+    def test_inventory_recognition_gate_basic_eoq(self):
+        problem = {
+            "context": {"description": "EOQ inventory problem", "unit": "USD/year"},
+            "problem_type": "inventory_theory",
+            "annual_demand": 1000,
+            "order_cost": 50,
+            "holding_cost": 2,
+        }
+        recognition = recognize_inventory_theory(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertEqual(recognition["subtype"], "INV_BASIC_EOQ")
+        solved = solve_inventory_theory_problem(problem)
+        self.assertEqual(solved["status"], "optimal")
+        self.assertAlmostEqual(solved["order_quantity"], 223.606797, places=5)
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_inventory_gate_blocks_missing_holding_cost(self):
+        problem = {
+            "context": {"description": "EOQ inventory problem"},
+            "problem_type": "inventory_theory",
+            "annual_demand": 1000,
+            "order_cost": 50,
+        }
+        result = solve_inventory_theory_problem(problem)
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("holding_cost_h", result["missing_data"])
+
+    def test_network_recognition_gate_shortest_path(self):
+        problem = {
+            "context": {"description": "Find the shortest path from A to D."},
+            "problem_type": "shortest_path",
+            "graph": {
+                "source": "A",
+                "target": "D",
+                "edges": [
+                    {"from": "A", "to": "B", "cost": 1},
+                    {"from": "B", "to": "D", "cost": 2},
+                    {"from": "A", "to": "D", "cost": 10},
+                ],
+            },
+        }
+        recognition = recognize_network_modelling(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertEqual(recognition["subtype"], "NET_SHORTEST_PATH")
+        solved = solve_network_modelling_problem(problem)
+        self.assertEqual(solved["status"], "optimal")
+        self.assertEqual(solved["path"], ["A", "B", "D"])
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_network_gate_blocks_missing_target(self):
+        problem = {
+            "context": {"description": "Find shortest path in a route network."},
+            "problem_type": "shortest_path",
+            "graph": {
+                "source": "A",
+                "edges": [{"from": "A", "to": "B", "cost": 1}],
+            },
+        }
+        result = solve_network_modelling_problem(problem)
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("target_node", result["missing_data"])
+
+    def test_nonlinear_recognition_gate_quadratic(self):
+        problem = {
+            "context": {"description": "Quadratic nonlinear programming with KKT conditions."},
+            "problem_type": "nonlinear_programming",
+            "nlp": {
+                "sense": "minimize",
+                "variable_names": ["x", "y"],
+                "initial": [0, 0],
+                "objective": {"type": "quadratic", "Q": [[2, 0], [0, 2]], "c": [-2, -4]},
+                "constraints": [{"type": "ineq", "coefficients": [1, 1], "rhs": 10}],
+                "bounds": [(0, None), (0, None)],
+            },
+        }
+        recognition = recognize_nonlinear_programming(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertEqual(recognition["subtype"], "NLP_INEQUALITY_CONSTRAINED_KKT")
+        solved = solve_nonlinear_programming_problem(problem)
+        self.assertEqual(solved["status"], "optimal_local")
+        self.assertAlmostEqual(solved["solution"]["x"], 1, places=4)
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_nonlinear_gate_blocks_missing_objective(self):
+        problem = {
+            "context": {"description": "Nonlinear programming problem with variables only."},
+            "problem_type": "nonlinear_programming",
+            "nlp": {"variable_names": ["x"], "initial": [0], "bounds": [(0, None)]},
+        }
+        result = solve_nonlinear_programming_problem(problem)
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("objective_function", result["missing_data"])
+
+    def test_integer_programming_recognition_gate_binary_mip(self):
+        problem = {
+            "context": {"description": "Binary project selection integer programming problem."},
+            "problem_type": "integer_programming",
+            "ip": {
+                "sense": "maximize",
+                "c": [10, 7],
+                "A_ub": [[6, 4]],
+                "b_ub": [8],
+                "bounds": [(0, 1), (0, 1)],
+                "integrality": [1, 1],
+                "variable_names": ["project_a", "project_b"],
+            },
+        }
+        recognition = recognize_integer_programming(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertEqual(recognition["subtype"], "IP_BINARY_SELECTION")
+        solved = solve_integer_programming_problem(problem)
+        self.assertEqual(solved["status"], "optimal")
+        self.assertAlmostEqual(solved["objective_value"], 10)
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_integer_programming_gate_blocks_missing_integrality(self):
+        problem = {
+            "context": {"description": "Optimization model with whole-number requirements not yet specified."},
+            "problem_type": "integer_programming",
+            "c": [1, 1],
+            "A_ub": [[1, 1]],
+            "b_ub": [3],
+            "bounds": [(0, None), (0, None)],
+            "variable_names": ["x", "y"],
+        }
+        result = solve_integer_programming_problem(problem)
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("integrality_requirements", result["missing_data"])
+
+    def test_router_dispatches_integer_programming(self):
+        problem = {
+            "context": {"description": "Binary project selection integer programming problem."},
+            "problem_type": "integer_programming",
+            "ip": {
+                "sense": "maximize",
+                "c": [10, 7],
+                "A_ub": [[6, 4]],
+                "b_ub": [8],
+                "bounds": [(0, 1), (0, 1)],
+                "integrality": [1, 1],
+                "variable_names": ["project_a", "project_b"],
+            },
+        }
+        result = solve_problem(problem)
+        self.assertEqual(result["problem_type"], "integer_programming")
+        self.assertEqual(result["result"]["status"], "optimal")
+        self.assertTrue(result["result"]["verification"]["passed"])
+
+    def test_markov_recognition_gate_stationary_distribution(self):
+        problem = {
+            "context": {"description": "Markov transition matrix steady-state by month."},
+            "problem_type": "markov_processes",
+            "markov": {
+                "states": ["A", "B"],
+                "time_step": "month",
+                "transition_matrix": [[0.8, 0.2], [0.1, 0.9]],
+                "requested_outputs": ["stationary_distribution"],
+            },
+        }
+        recognition = recognize_markov_processes(problem)
+        self.assertTrue(recognition["can_solve"])
+        self.assertEqual(recognition["subtype"], "MC_STATIONARY_DISTRIBUTION")
+        solved = solve_markov_processes_problem(problem)
+        self.assertEqual(solved["status"], "computed")
+        self.assertAlmostEqual(solved["stationary_distribution"][0], 1 / 3, places=5)
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_router_adds_markov_state_mermaid(self):
+        problem = {
+            "context": {"description": "Vẽ Markov chain transition matrix steady-state by month."},
+            "problem_type": "markov_processes",
+            "markov": {
+                "states": ["A", "B"],
+                "time_step": "month",
+                "transition_matrix": [[0.8, 0.2], [0.1, 0.9]],
+                "requested_outputs": ["stationary_distribution"],
+            },
+        }
+        solved = solve_problem(problem)
+        self.assertEqual(solved["result"]["status"], "computed")
+        self.assertIn("stateDiagram-v2", solved["result"]["markdown_report"])
+        self.assertIn("A --> B: 0.2", solved["result"]["markdown_report"])
+
+    def test_markov_n_step_distribution(self):
+        problem = {
+            "context": {"description": "Markov brand switching after 2 months."},
+            "problem_type": "markov_processes",
+            "markov": {
+                "states": ["A", "B"],
+                "time_step": "month",
+                "transition_matrix": [[0.8, 0.2], [0.1, 0.9]],
+                "initial_distribution": [1, 0],
+                "n_steps": 2,
+                "requested_outputs": ["n_step_probability"],
+            },
+        }
+        solved = solve_markov_processes_problem(problem)
+        self.assertEqual(solved["status"], "computed")
+        self.assertEqual(solved["state_distribution_after_n"], [0.66, 0.34])
+        self.assertTrue(solved["verification"]["passed"])
+
+    def test_markov_absorbing_chain_and_first_passage(self):
+        absorbing_problem = {
+            "context": {"description": "Absorbing Markov chain by period."},
+            "problem_type": "markov_processes",
+            "markov": {
+                "states": ["Start", "Middle", "Done"],
+                "time_step": "period",
+                "transition_matrix": [[0.5, 0.5, 0], [0.2, 0.3, 0.5], [0, 0, 1]],
+                "requested_outputs": ["absorbing_chain"],
+            },
+        }
+        absorbing = solve_markov_processes_problem(absorbing_problem)
+        self.assertEqual(absorbing["status"], "computed")
+        self.assertEqual(absorbing["absorbing_states"], [2])
+        self.assertTrue(absorbing["verification"]["passed"])
+
+        first_passage_problem = {
+            "context": {"description": "Mean first passage time to sunny by day."},
+            "problem_type": "markov_processes",
+            "markov": {
+                "states": ["Rainy", "Sunny"],
+                "time_step": "day",
+                "transition_matrix": [[0.6, 0.4], [0.2, 0.8]],
+                "target_state_for_first_passage": "Sunny",
+                "requested_outputs": ["first_passage_time"],
+            },
+        }
+        first = solve_markov_processes_problem(first_passage_problem)
+        self.assertEqual(first["status"], "computed")
+        self.assertAlmostEqual(first["mean_first_passage_steps"]["Rainy"], 2.5)
+
+    def test_markov_gate_blocks_missing_time_step(self):
+        problem = {
+            "context": {"description": "Markov transition matrix steady-state."},
+            "problem_type": "markov_processes",
+            "markov": {
+                "states": ["A", "B"],
+                "transition_matrix": [[0.8, 0.2], [0.1, 0.9]],
+                "requested_outputs": ["stationary_distribution"],
+            },
+        }
+        result = solve_markov_processes_problem(problem)
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("time_step", result["missing_data"])
 
     def test_text_solver_oil_drilling_probability_tree(self):
         text = """
@@ -205,6 +610,64 @@ class EDSSEngineTests(unittest.TestCase):
         self.assertAlmostEqual(solved["perfect_information"]["value"], 2500)
         self.assertIn("```mermaid", solved["markdown_report"])
 
+    def test_text_solver_electric_car_pilot_scheme(self):
+        text = """
+        A firm is contemplating replacing its fleet of petrol cars with a fleet of electric cars.
+        If the manufacturer is right, the firm will save USD 1,000,000.
+        If the new technology fails, the change will cost the firm USD 450,000.
+        A third possibility is no difference.
+
+        | Event | Probability |
+        |---|---:|
+        | Money is saved | 0.25 |
+        | Losses occur | 0.45 |
+        | No difference | 0.30 |
+
+        The pilot scheme will cost the firm USD 50,000.
+
+        | Actual situation with change | Pilot scheme indicates: Savings | Pilot scheme indicates: No change | Pilot scheme indicates: Losses |
+        |---|---:|---:|---:|
+        | Money is saved | 0.6 | 0.3 | 0.1 |
+        | No difference | 0.4 | 0.4 | 0.2 |
+        | Losses | 0.1 | 0.5 | 0.4 |
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        solved = result["solved"]["result"]
+        self.assertEqual(solved["solver"], "imperfect_information_decision_tree")
+        self.assertAlmostEqual(solved["without_information"]["expected_value"], 47500)
+        self.assertAlmostEqual(solved["with_sample_information"]["expected_value_before_cost"], 129750)
+        self.assertAlmostEqual(solved["with_sample_information"]["expected_value_after_cost"], 79750)
+        self.assertAlmostEqual(solved["maximum_information_cost"], 82250)
+        self.assertEqual(solved["recommendation"]["action"], "with_pilot")
+        self.assertIn("```mermaid", solved["markdown_report"])
+
+    def test_text_solver_binary_market_research_cost_decision(self):
+        text = """
+        A firm is deciding whether to build an assembly plant in Brazil or in Mississippi, USA.
+        | Location | Construction cost |
+        |---|---:|
+        | Brazil | USD 10 million |
+        | Mississippi | USD 20 million |
+
+        If the firm builds this plant in Brazil and local demand drops over the following 5 years,
+        the project will be stopped and the firm will lose USD 10 million. It will still have to
+        build a plant in Mississippi. The probability of demand dropping is 20%.
+        For USD 1 million, it can contract a market research firm.
+        The firm will predict the occurrence of a drop in demand 95% of the time when a drop actually occurs.
+        It will predict that a drop will not occur 90% of the time when a drop actually does not occur.
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        solved = result["solved"]["result"]
+        self.assertEqual(solved["solver"], "imperfect_information_decision_tree")
+        self.assertAlmostEqual(solved["without_information"]["expected_value"], 14.0)
+        self.assertAlmostEqual(solved["with_sample_information"]["expected_value_before_cost"], 12.9)
+        self.assertAlmostEqual(solved["with_sample_information"]["expected_value_after_cost"], 13.9)
+        self.assertAlmostEqual(solved["sample_information_value"], 1.1)
+        self.assertAlmostEqual(solved["perfect_information"]["value"], 2.0)
+        self.assertEqual(solved["recommendation"]["action"], "with_pilot")
+
     def test_text_solver_expected_value_problem(self):
         text = """
         Expected value decision.
@@ -218,6 +681,67 @@ class EDSSEngineTests(unittest.TestCase):
         self.assertEqual(result["solved"]["problem_type"], "decision_tree")
         self.assertEqual(result["solved"]["result"]["recommendation"], "B")
         self.assertAlmostEqual(result["solved"]["result"]["results"][0]["expected_value"], 44)
+
+    def test_game_theory_zero_sum_saddle_point(self):
+        problem = {
+            "context": {"description": "zero-sum payoff matrix game"},
+            "game": {
+                "players": ["A", "B"],
+                "row_player": "A",
+                "column_player": "B",
+                "row_strategies": ["A1", "A2"],
+                "column_strategies": ["B1", "B2"],
+                "payoff_orientation": "payoff to row player",
+                "is_zero_sum": True,
+                "payoff_matrix": [[3, 1], [4, 2]],
+            },
+        }
+        result = solve_game_theory(problem)
+        self.assertEqual(result["status"], "computed")
+        self.assertTrue(result["pure_strategy_check"]["has_saddle_point"])
+        self.assertEqual(result["solution"]["maximin_strategy"], "A2")
+        self.assertEqual(result["solution"]["minimax_strategy"], "B2")
+        self.assertAlmostEqual(result["solution"]["maximin"], 2)
+
+    def test_game_theory_zero_sum_2x2_mixed(self):
+        problem = {
+            "context": {"description": "zero-sum mixed strategy game"},
+            "game": {
+                "players": ["A", "B"],
+                "row_player": "A",
+                "column_player": "B",
+                "row_strategies": ["A1", "A2"],
+                "column_strategies": ["B1", "B2"],
+                "payoff_orientation": "payoff to row player",
+                "is_zero_sum": True,
+                "payoff_matrix": [[2, -1], [-2, 1]],
+            },
+        }
+        result = solve_game_theory(problem)
+        self.assertEqual(result["status"], "computed")
+        self.assertEqual(result["solution"]["type"], "mixed_2x2")
+        self.assertAlmostEqual(result["solution"]["row_probabilities"]["A1"], 0.5)
+        self.assertAlmostEqual(result["solution"]["column_probabilities"]["B1"], 1 / 3)
+        self.assertAlmostEqual(result["solution"]["game_value"], 0)
+
+    def test_text_solver_building_encounter_game(self):
+        text = """
+        Encounter in a Building - Games Theory Problem.
+        Two people are in opposite corners. Each time, both move simultaneously:
+        Move to the right, R; Move to the left, L; Remain still, O.
+        If both move towards the same side, they do not meet. They meet if
+        they move towards opposite sides or one waits while the other moves.
+        The LP solution is x1 = x2 = x3 = 1/2, z = 3/2,
+        y1 = y2 = y3 = 1/2, w = 3/2.
+        """
+        result = solve_text_problem(text)
+        self.assertEqual(result["status"], "solved")
+        solved = result["solved"]["result"]
+        self.assertEqual(solved["solver"], "game_theory")
+        self.assertAlmostEqual(solved["solution"]["row_probabilities"]["R"], 1 / 3)
+        self.assertAlmostEqual(solved["solution"]["column_probabilities"]["R"], 1 / 3)
+        self.assertAlmostEqual(solved["solution"]["game_value"], 2 / 3)
+        self.assertAlmostEqual(solved["solution"]["expected_rounds_to_meet"], 3 / 2)
 
     def test_text_solver_markdown_linear_programming_batch(self):
         text = r"""

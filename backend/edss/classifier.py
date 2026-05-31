@@ -34,19 +34,42 @@ def classify_problem(description: str, structured: dict[str, Any] | None = None)
         scores["network_modelling"] += 4
     if structured.get("variables") and structured.get("constraints") and structured.get("objective"):
         scores["linear_programming"] += 5
+    if structured.get("ip") or structured.get("integrality"):
+        scores["integer_programming"] += 8
+    if any(item.get("variable_type") in {"integer", "binary", "zero-one"} for item in structured.get("variables", [])):
+        scores["integer_programming"] += 6
+    if structured.get("nlp") or structured.get("radii"):
+        scores["nonlinear_programming"] += 8
     if structured.get("decision_tree") or structured.get("payoff_matrix"):
         scores["decision_theory"] += 5
-    if structured.get("probability_tree") or structured.get("bayes") or structured.get("independent_probabilities"):
+    if (
+        structured.get("probability_tree")
+        or structured.get("bayes")
+        or structured.get("diagnostic_decision")
+        or structured.get("imperfect_information_decision")
+        or structured.get("forklift_decision")
+        or structured.get("independent_probabilities")
+    ):
         scores["decision_theory"] += 7
     if structured.get("alternatives") and structured.get("states") and structured.get("payoff_matrix"):
         scores["decision_theory"] += 6
+    if structured.get("game"):
+        scores["game_theory"] += 10
     if structured.get("players") and structured.get("strategies") and structured.get("payoff_matrix"):
         scores["game_theory"] += 7
     if structured.get("inventory"):
         scores["inventory_theory"] += 6
+    if (
+        structured.get("annual_demand") or structured.get("demand")
+    ) and (structured.get("order_cost") or structured.get("ordering_cost")) and (
+        structured.get("holding_cost") or structured.get("holding_cost_rate")
+    ):
+        scores["inventory_theory"] += 5
     if structured.get("queueing"):
         scores["queueing_theory"] += 6
-    if structured.get("transition_matrix") or structured.get("markov_chain"):
+    if structured.get("arrival_rate") and structured.get("service_rate"):
+        scores["queueing_theory"] += 4
+    if structured.get("transition_matrix") or structured.get("markov_chain") or structured.get("markov"):
         scores["markov_processes"] += 6
     if structured.get("stages") and structured.get("states") and structured.get("decisions"):
         scores["dynamic_programming"] += 6
@@ -77,16 +100,37 @@ def missing_data_questions(problem: dict[str, Any]) -> list[str]:
     questions: list[str] = []
     kind = problem.get("problem_type") or classify_problem(problem.get("context", {}).get("description", ""), problem).get("problem_type")
     
-    if kind == "linear_programming" or kind == "integer_programming" or kind == "nonlinear_programming":
+    if kind == "linear_programming" or kind == "nonlinear_programming":
         if not problem.get("variables"):
             questions.append("Các biến quyết định là gì và giới hạn dưới/trên của từng biến?")
         if not problem.get("objective"):
             questions.append("Hàm mục tiêu cần maximize/minimize là gì và hệ số của từng biến?")
         if not problem.get("constraints"):
             questions.append("Các ràng buộc tài nguyên/công suất/ngân sách/thời gian là gì?")
+    if kind == "integer_programming":
+        ip = problem.get("ip", {})
+        if not (problem.get("variables") or problem.get("variable_names") or ip.get("variable_names")):
+            questions.append("Các biến quyết định là gì và giới hạn dưới/trên của từng biến?")
+        if not (problem.get("objective") or problem.get("c") or ip.get("c")):
+            questions.append("Hàm mục tiêu cần maximize/minimize là gì và hệ số của từng biến?")
+        if not (problem.get("constraints") or problem.get("A_ub") or problem.get("A_eq") or ip.get("A_ub") or ip.get("A_eq")):
+            questions.append("Các ràng buộc tài nguyên/công suất/ngân sách/thời gian là gì?")
+        if not (
+            problem.get("integrality")
+            or ip.get("integrality")
+            or any(item.get("variable_type") in {"integer", "binary", "zero-one"} for item in problem.get("variables", []))
+        ):
+            questions.append("Biến nào là integer và biến nào là binary/zero-one?")
             
     if kind == "decision_theory":
-        if problem.get("probability_tree") or problem.get("bayes") or problem.get("independent_probabilities"):
+        if (
+            problem.get("probability_tree")
+            or problem.get("bayes")
+            or problem.get("diagnostic_decision")
+            or problem.get("imperfect_information_decision")
+            or problem.get("forklift_decision")
+            or problem.get("independent_probabilities")
+        ):
             return questions or ["Dữ liệu đủ cho mô hình xác suất ban đầu; vui lòng xác nhận giả định độc lập/phụ thuộc."]
         if not problem.get("states"):
             questions.append("Các trạng thái bất định và xác suất tương ứng là gì?")
@@ -110,25 +154,50 @@ def missing_data_questions(problem: dict[str, Any]) -> list[str]:
             questions.append("Chi phí lưu kho (Holding cost) là bao nhiêu?")
             
     if kind == "queueing_theory":
-        if "arrival_rate" not in problem:
+        queueing = problem.get("queueing", {})
+        if "arrival_rate" not in problem and "arrival_rate" not in queueing:
             questions.append("Tốc độ đến (Arrival rate - λ) là bao nhiêu và đơn vị là gì?")
-        if "service_rate" not in problem:
+        if "service_rate" not in problem and "service_rate" not in queueing:
             questions.append("Tốc độ phục vụ (Service rate - μ) là bao nhiêu và đơn vị là gì?")
+        if "servers" not in problem and "servers" not in queueing and not problem.get("optimize_servers") and not queueing.get("optimize_servers"):
+            questions.append("Số server s là bao nhiêu, hoặc phạm vi số server cần thử để tối ưu là gì?")
             
     if kind == "markov_processes":
-        if not problem.get("transition_matrix"):
+        markov = problem.get("markov") or problem.get("markov_chain") or {}
+        if not (problem.get("transition_matrix") or markov.get("transition_matrix")):
             questions.append("Ma trận chuyển trạng thái (Transition matrix) P là gì?")
+        if not (problem.get("markov_states") or problem.get("states") or markov.get("states")):
+            questions.append("Các trạng thái của Markov chain là gì?")
+        if not (problem.get("time_step") or markov.get("time_step")):
+            questions.append("Một bước chuyển Markov tương ứng với đơn vị thời gian nào?")
+        if not (problem.get("requested_outputs") or markov.get("requested_outputs")):
+            questions.append("Cần tính output nào: n-step, stationary, first passage, absorbing hay long-run cost?")
             
     if kind == "game_theory":
+        game = problem.get("game", {})
+        if game and game.get("payoff_matrix") and game.get("row_strategies") and game.get("column_strategies"):
+            return questions or ["Dữ liệu đủ cho Game Theory recognition gate và solver."]
         if not problem.get("payoff_matrix"):
             questions.append("Ma trận lợi ích (Payoff matrix) của các người chơi là gì?")
             
     if kind == "dynamic_programming":
-        if not problem.get("stages") and not problem.get("resource_allocation"):
-            questions.append("Thông tin về các giai đoạn (stages), trạng thái (states) và hàm chuyển đổi (transition) là gì?")
+        if problem.get("resource_allocation"):
+            spec = problem.get("resource_allocation", {})
+            if spec.get("total_resource") is None:
+                questions.append("Tổng tài nguyên ban đầu của bài DP là bao nhiêu?")
+            if not spec.get("stage_returns"):
+                questions.append("Bảng lợi ích/chi phí theo lượng phân bổ cho từng stage là gì?")
+        elif problem.get("stages"):
+            incomplete = any(
+                not stage.get("states") or not stage.get("actions") or not stage.get("transitions") or not stage.get("rewards")
+                for stage in problem.get("stages", [])
+            )
+            if incomplete:
+                questions.append("Mỗi stage cần có states, actions, transition function và reward/cost function.")
+        elif not (problem.get("demands") and ("order_cost" in problem or "holding_cost" in problem)):
+            questions.append("Thông tin về stages, states, decisions, transition function, reward/cost function và boundary condition là gì?")
 
     if kind == "unknown":
         questions.append("Không thể nhận dạng bài toán. Vui lòng cung cấp thêm thông tin rõ ràng hơn.")
         
     return questions or ["Dữ liệu có vẻ đã đầy đủ, hệ thống đang kiểm tra logic trước khi chạy solver."]
-

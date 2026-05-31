@@ -7,7 +7,7 @@ import type { AnalysisResult, DecisionInput } from "@/lib/types";
 type Props = {
   decision: DecisionInput;
   result: AnalysisResult | null;
-  mode: "map" | "score" | "regret" | "tree";
+  mode: "map" | "logic" | "score" | "regret" | "tree";
   refreshToken?: number;
   visibleKinds?: string[];
   onNodeSelect?: (node: { label: string; kind: string; detail: string }) => void;
@@ -143,6 +143,10 @@ export default function DecisionChart({ decision, result, mode, refreshToken = 0
         .scaleOrdinal<string, string>()
         .domain(["decision", "option", "scenario", "factor", "evidence"])
         .range(["#202124", "#0f766e", "#2563eb", "#b45309", "#7c3aed"]);
+      const fillColor = d3
+        .scaleOrdinal<string, string>()
+        .domain(["decision", "option", "scenario", "factor", "evidence"])
+        .range(["#f3f4f6", "#e8f4f1", "#eef4ff", "#fff4e8", "#f4efff"]);
       const g = svg.append("g");
       svg.call(
         d3
@@ -232,18 +236,17 @@ export default function DecisionChart({ decision, result, mode, refreshToken = 0
       node
         .append("circle")
         .attr("r", (d) => Math.sqrt(d.value) + 9)
-        .attr("fill", (d) => color(d.kind))
-        .attr("fill-opacity", 0.9)
-        .attr("stroke", "#fff")
-        .attr("stroke-width", 2);
+        .attr("fill", (d) => fillColor(d.kind))
+        .attr("stroke", (d) => color(d.kind))
+        .attr("stroke-width", 2.5);
 
       node
         .append("text")
         .attr("text-anchor", "middle")
         .attr("dy", 4)
-        .attr("font-size", 10)
-        .attr("font-weight", 700)
-        .attr("fill", "#fff")
+        .attr("font-size", 10.5)
+        .attr("font-weight", 800)
+        .attr("fill", "#202124")
         .text((d) => (d.label.length > 16 ? `${d.label.slice(0, 16)}...` : d.label));
 
       simulation.on("tick", () => {
@@ -274,6 +277,183 @@ export default function DecisionChart({ decision, result, mode, refreshToken = 0
         .attr("text-anchor", "middle")
         .attr("fill", "#687076")
         .text("Chạy phân tích để xem decision map");
+      return;
+    }
+
+    if (mode === "logic") {
+      const best = result.option_results[0];
+      const options = result.option_results.slice(0, 4);
+      const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+      const edge = 22;
+      const columnGap = clamp(width * 0.014, 12, 18);
+      const decisionW = clamp(width * 0.13, 120, 150);
+      const optionW = clamp(width * 0.18, 150, 185);
+      const factorW = clamp(width * 0.2, 170, 210);
+      const scoreW = clamp(width * 0.15, 128, 150);
+      const recommendationW = Math.max(
+        146,
+        width - edge * 2 - decisionW - optionW - factorW - scoreW - columnGap * 4
+      );
+      const xDecision = edge;
+      const xOption = xDecision + decisionW + columnGap;
+      const xFactors = xOption + optionW + columnGap;
+      const xScore = xFactors + factorW + columnGap;
+      const xRecommendation = xScore + scoreW + columnGap;
+      const top = 48;
+      const optionGap = Math.max(112, Math.min(142, (height - 190) / Math.max(1, options.length)));
+      const boxRadius = 7;
+
+      type BoxStyle = {
+        fill?: string;
+        stroke?: string;
+        text?: string;
+        title?: string;
+      };
+
+      function addBox(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+        title: string,
+        lines: string[],
+        style: BoxStyle = {}
+      ) {
+        const group = svg.append("g").attr("transform", `translate(${x},${y})`);
+        group
+          .append("rect")
+          .attr("width", w)
+          .attr("height", h)
+          .attr("rx", boxRadius)
+          .attr("fill", style.fill || "#fff")
+          .attr("stroke", style.stroke || "#d9d6cd")
+          .attr("stroke-width", style.stroke ? 2 : 1);
+        const text = group
+          .append("text")
+          .attr("x", 12)
+          .attr("y", 19)
+          .attr("fill", style.text || "#202124")
+          .attr("font-size", 12);
+        text
+          .append("tspan")
+          .attr("font-weight", 800)
+          .attr("fill", style.title || style.text || "#202124")
+          .text(title.length > 24 ? `${title.slice(0, 24)}...` : title);
+        lines.slice(0, 4).forEach((line, index) => {
+          text
+            .append("tspan")
+            .attr("x", 12)
+            .attr("dy", index === 0 ? 18 : 15)
+            .attr("fill", style.text || "#394044")
+            .attr("font-size", 11)
+            .text(line.length > Math.max(18, Math.floor(w / 6.2)) ? `${line.slice(0, Math.max(18, Math.floor(w / 6.2)))}...` : line);
+        });
+        return { x, y, w, h, group };
+      }
+
+      function connect(
+        from: { x: number; y: number; w: number; h: number },
+        to: { x: number; y: number; w: number; h: number },
+        label: string,
+        strength: "strong" | "normal" | "muted" = "normal"
+      ) {
+        const sx = from.x + from.w;
+        const sy = from.y + from.h / 2;
+        const tx = to.x;
+        const ty = to.y + to.h / 2;
+        const mid = (sx + tx) / 2;
+        const stroke = strength === "strong" ? "#0f766e" : strength === "muted" ? "#d9d6cd" : "#9aa0a6";
+        svg
+          .append("path")
+          .attr("d", `M${sx},${sy} C${mid},${sy} ${mid},${ty} ${tx},${ty}`)
+          .attr("fill", "none")
+          .attr("stroke", stroke)
+          .attr("stroke-width", strength === "strong" ? 3 : 1.4)
+          .attr("stroke-opacity", strength === "muted" ? 0.55 : 0.9);
+        svg
+          .append("text")
+          .attr("x", mid)
+          .attr("y", (sy + ty) / 2 - 6)
+          .attr("text-anchor", "middle")
+          .attr("font-size", 10)
+          .attr("font-weight", 700)
+          .attr("fill", strength === "strong" ? "#0b5f59" : "#687076")
+          .text(label);
+      }
+
+      svg
+        .append("text")
+        .attr("x", 18)
+        .attr("y", 22)
+        .attr("font-size", 13)
+        .attr("font-weight", 800)
+        .attr("fill", "#202124")
+        .text("Logic Path: contribution -> risk adjustment -> optimization recommendation");
+
+      const decisionBox = addBox(xDecision, top + 130, decisionW, 86, "Decision", [
+        decision.question || "Câu hỏi quyết định",
+        `Risk tolerance ${(decision.riskTolerance * 100).toFixed(0)}%`,
+      ], { fill: "#f8fafc", stroke: "#202124" });
+
+      const recommendationBox = addBox(xRecommendation, top + 130, recommendationW, 92, "Recommendation", [
+        best.name,
+        `Score ${best.risk_adjusted_score.toFixed(1)}`,
+        `Regret ${best.expected_regret.toFixed(1)}`,
+      ], { fill: "#e8f4f1", stroke: "#0f766e", title: "#0b5f59" });
+
+      const scoreBoxes: Array<{ optionId: string; box: ReturnType<typeof addBox> }> = [];
+      options.forEach((option, index) => {
+        const y = top + index * optionGap;
+        const isBest = option.id === best.id;
+        const optionBox = addBox(xOption, y, optionW, 78, option.name, [
+          `Final score ${option.risk_adjusted_score.toFixed(1)}`,
+          `Expected utility ${option.expected_utility.toFixed(1)}`,
+        ], {
+          fill: isBest ? "#e8f4f1" : "#ffffff",
+          stroke: isBest ? "#0f766e" : "#d9d6cd",
+          title: isBest ? "#0b5f59" : "#202124",
+        });
+        connect(decisionBox, optionBox, "choice", isBest ? "strong" : "muted");
+
+        const riskPenalty = option.expected_utility - option.risk_adjusted_score;
+        const strongestScenario = [...option.scenarios].sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))[0];
+        const factorBox = addBox(xFactors, y, factorW, 86, isBest ? "Key drivers" : "Score drivers", [
+          `+ scenario ${strongestScenario?.contribution.toFixed(1) ?? "n/a"}`,
+          `- risk penalty ${riskPenalty.toFixed(1)}`,
+          `- regret ${option.expected_regret.toFixed(1)}`,
+          `confidence ${(option.confidence * 100).toFixed(0)}%`,
+        ], {
+          fill: isBest ? "#f7fcfa" : "#fbfaf7",
+          stroke: isBest ? "#0f766e" : "#d9d6cd",
+        });
+        connect(optionBox, factorBox, isBest ? "dominant factors" : "scored", isBest ? "strong" : "muted");
+
+        const scoreBox = addBox(xScore, y + 9, scoreW, 68, "Optimization score", [
+          `EU ${option.expected_utility.toFixed(1)}`,
+          `Risk-adj ${option.risk_adjusted_score.toFixed(1)}`,
+          `Worst ${option.worst_case.toFixed(1)}`,
+        ], {
+          fill: isBest ? "#e8f4f1" : "#ffffff",
+          stroke: isBest ? "#0f766e" : "#d9d6cd",
+        });
+        scoreBoxes.push({ optionId: option.id, box: scoreBox });
+        connect(factorBox, scoreBox, isBest ? "max score" : "compare", isBest ? "strong" : "muted");
+      });
+
+      const bestScore = scoreBoxes.find((item) => item.optionId === best.id)?.box;
+      if (bestScore) connect(bestScore, recommendationBox, "best feasible path", "strong");
+
+      const scenarioY = Math.min(height - 112, top + options.length * optionGap + 12);
+      addBox(xFactors, scenarioY, Math.min(width - xFactors - edge, factorW + scoreW + columnGap), 88, "Best option scenario contribution", best.scenarios
+        .slice()
+        .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+        .slice(0, 3)
+        .map((scenario) => `${scenario.name}: P ${(scenario.probability * 100).toFixed(0)}% x U ${scenario.utility} = ${scenario.contribution.toFixed(1)}`), {
+          fill: "#eef4ff",
+          stroke: "#2563eb",
+          title: "#1d4ed8",
+        });
+
       return;
     }
 
@@ -382,5 +562,5 @@ export default function DecisionChart({ decision, result, mode, refreshToken = 0
       .text((d) => d.value.toFixed(1));
   }, [decision, result, mode, refreshToken, visibleKinds, onNodeSelect]);
 
-  return <svg ref={ref} className="chart" role="img" aria-label="Decision analysis chart" />;
+  return <svg ref={ref} className="chart" data-mode={mode} role="img" aria-label="Decision analysis chart" />;
 }

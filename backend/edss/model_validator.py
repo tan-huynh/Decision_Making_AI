@@ -29,6 +29,8 @@ def validate_model(problem: dict[str, Any]) -> dict[str, Any]:
         _validate_dynamic_programming(problem, errors, warnings, info)
     elif kind in ("decision_tree", "expected_value"):
         _validate_decision_uncertainty(problem, errors, warnings)
+    elif kind == "queueing_theory":
+        _validate_queueing(problem, errors, warnings, info)
 
     return {"is_valid": len(errors) == 0, "errors": errors, "warnings": warnings, "info": info, "problem_type": kind}
 
@@ -176,6 +178,16 @@ def _validate_network(problem: dict[str, Any], kind: str, errors: list[str], war
 def _validate_dynamic_programming(problem: dict[str, Any], errors: list[str], warnings: list[str], info: list[str]) -> None:
     spec = problem.get("resource_allocation")
     if not spec:
+        stages = problem.get("stages", [])
+        if stages:
+            for idx, stage in enumerate(stages, start=1):
+                for key in ("states", "actions", "transitions", "rewards"):
+                    if not stage.get(key):
+                        errors.append(f"DP stage {idx} thiếu {key}.")
+            return
+        if problem.get("demands") and ("order_cost" in problem or "holding_cost" in problem):
+            info.append("Inventory DP có demands và cost parameters; solver sẽ kiểm tra chi tiết khi chạy.")
+            return
         return
     total = int(spec.get("total_resource", -1))
     rows = spec.get("stage_returns", [])
@@ -186,6 +198,25 @@ def _validate_dynamic_programming(problem: dict[str, Any], errors: list[str], wa
     for idx, row in enumerate(rows):
         if len(row) <= total:
             warnings.append(f"Stage {idx + 1} chỉ có {len(row)} mức, có thể không đủ để xét total_resource={total}.")
+
+
+def _validate_queueing(problem: dict[str, Any], errors: list[str], warnings: list[str], info: list[str]) -> None:
+    queueing = {**problem.get("queueing", {}), **problem}
+    arrival = queueing.get("arrival_rate")
+    service = queueing.get("service_rate")
+    servers = queueing.get("servers")
+    if arrival is not None and float(arrival) < 0:
+        errors.append("Queueing arrival_rate λ phải không âm.")
+    if service is not None and float(service) <= 0:
+        errors.append("Queueing service_rate μ phải dương.")
+    if servers is not None and int(servers) <= 0:
+        errors.append("Queueing servers s phải là số nguyên dương.")
+    if arrival is not None and service is not None and servers is not None:
+        rho = float(arrival) / (int(servers) * float(service))
+        if rho >= 1:
+            warnings.append(f"ρ = {rho:.4f} >= 1; hệ không ổn định nếu không tăng service capacity.")
+        else:
+            info.append(f"Queueing stability pre-check passed: ρ = {rho:.4f}.")
 
 
 def _validate_decision_uncertainty(problem: dict[str, Any], errors: list[str], warnings: list[str]) -> None:

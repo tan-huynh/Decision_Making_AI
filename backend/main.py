@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from agentic_research import run_agentic_research
+from autonomous import record_autonomous_learning, select_decision_route, select_text_solver_route
 from book_rag import book_context_for_decision
 from clarification import build_clarifying_questions
 from decision_engine import compute_results, learn_from_outcome
@@ -121,7 +122,18 @@ async def edss_solve_text(payload: dict[str, str]) -> dict[str, Any]:
     text = payload.get("text", "")
     if len(text.strip()) < 4:
         raise HTTPException(status_code=400, detail="Missing problem text.")
-    return await solve_text_problem_async(text)
+    autonomy = select_text_solver_route(text)
+    result = await solve_text_problem_async(text)
+    profile = record_autonomous_learning(
+        {
+            **autonomy,
+            "source": "edss_solve_text",
+            "problem_preview": text[:500],
+            "status": result.get("status"),
+        }
+    )
+    result["autonomy"] = {**autonomy, "learning_profile": profile}
+    return result
 
 
 @app.post("/edss/solve/lp")
@@ -543,6 +555,7 @@ async def generate_model(request: GenerateModelRequest) -> dict[str, Any]:
 @app.post("/analyze")
 async def analyze(request: DecisionRequest) -> dict[str, Any]:
     payload = request.model_dump()
+    autonomy = select_decision_route(payload)
     safety = safety_assessment(payload)
     try:
         quantitative = compute_results(payload)
@@ -573,12 +586,22 @@ async def analyze(request: DecisionRequest) -> dict[str, Any]:
     ai_review = await call_ollama(payload.get("model", "llama3.1"), system, str(prompt))
     clarifying_questions = build_clarifying_questions(payload, quantitative)
     trace = [
+        {"step": "autonomous_route", "output": autonomy},
         {"step": "clarify", "output": {"questions": clarifying_questions, "safety": safety}},
         {"step": "retrieve_book_rag", "output": [f"p.{item['page']} {item['section']}" for item in book.get("results", [])]},
         *web.get("agent_trace", []),
         {"step": "monte_carlo", "output": simulation.get("distributions", [])[:3]},
         {"step": "decide", "output": quantitative.get("recommendation")},
     ]
+    auto_profile = record_autonomous_learning(
+        {
+            **autonomy,
+            "source": "decision_analyze",
+            "problem_preview": payload.get("question", "")[:500],
+            "recommendation": quantitative.get("recommendation"),
+            "decision_gate": "needs_clarification" if safety.get("requires_clarification") else "ready",
+        }
+    )
     return {
         **quantitative,
         "warnings": safety.get("warnings", []) + safety_warnings(payload.get("domain", "life")) + quantitative["warnings"],
@@ -591,6 +614,7 @@ async def analyze(request: DecisionRequest) -> dict[str, Any]:
         "safety": safety,
         "decision_gate": "needs_clarification" if safety.get("requires_clarification") else "ready",
         "clarifying_questions": clarifying_questions,
+        "autonomy": {**autonomy, "learning_profile": auto_profile},
     }
 
 

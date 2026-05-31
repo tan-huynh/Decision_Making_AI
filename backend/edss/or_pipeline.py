@@ -147,15 +147,27 @@ def classify_with_taxonomy(text: str, structured: dict[str, Any] | None = None) 
     if structured.get("c") and (structured.get("A_ub") or structured.get("A_eq")):
         scores["linear_programming"] += 3
         evidence["linear_programming"].append("linear matrix model present")
+    if structured.get("ip") or structured.get("integrality"):
+        scores["integer_programming"] += 8
+        evidence["integer_programming"].append("integer/binary model data present")
+    if any(item.get("variable_type") in {"integer", "binary", "zero-one"} for item in structured.get("variables", [])):
+        scores["integer_programming"] += 6
+        evidence["integer_programming"].append("integer or binary variable types present")
     if structured.get("graph", {}).get("edges"):
         scores["network_modelling"] += 3
         evidence["network_modelling"].append("graph edges present")
     if structured.get("resource_allocation"):
         scores["dynamic_programming"] += 4
         evidence["dynamic_programming"].append("resource allocation stages present")
-    if structured.get("payoff_matrix"):
+    if structured.get("payoff_matrix") and not structured.get("game"):
         scores["decision_theory"] += 3
         evidence["decision_theory"].append("payoff matrix present")
+    if structured.get("game"):
+        scores["game_theory"] += 8
+        evidence["game_theory"].append("structured game model present")
+    if structured.get("markov") or structured.get("transition_matrix"):
+        scores["markov_processes"] += 8
+        evidence["markov_processes"].append("transition matrix or Markov model present")
 
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     best_type, best_score = ranked[0]
@@ -195,6 +207,35 @@ def required_missing_slots(problem_type: str, structured: dict[str, Any]) -> lis
             missing.append("objective")
         if not (_has_value(structured, "A_ub") or _has_value(structured, "A_eq") or _has_value(structured, "constraints")):
             missing.append("constraints")
+    elif kind == "integer_programming":
+        ip = structured.get("ip", {})
+        if not (ip.get("variable_names") or structured.get("variable_names") or structured.get("variables")):
+            missing.append("decision_variables")
+        if not (_has_value(ip, "c") or _has_value(structured, "c") or _has_value(structured, "objective")):
+            missing.append("objective")
+        if not (
+            _has_value(ip, "A_ub")
+            or _has_value(ip, "A_eq")
+            or _has_value(structured, "A_ub")
+            or _has_value(structured, "A_eq")
+            or _has_value(structured, "constraints")
+            or _has_value(structured, "assignment_costs")
+        ):
+            missing.append("constraints")
+        if not (
+            _has_value(ip, "integrality")
+            or _has_value(structured, "integrality")
+            or any(item.get("variable_type") in {"integer", "binary", "zero-one"} for item in structured.get("variables", []))
+        ):
+            missing.append("integrality_requirements")
+    elif kind == "nonlinear_programming":
+        nlp = structured.get("nlp", {})
+        if not (nlp.get("variable_names") or structured.get("variable_names") or structured.get("variables")):
+            missing.append("decision_variables")
+        if not (nlp.get("objective") or structured.get("objective") or structured.get("radii")):
+            missing.append("objective_function")
+        if not (nlp.get("bounds") or structured.get("bounds") or structured.get("variables") or structured.get("radii")):
+            missing.append("domain_constraints")
     elif kind == "network_modelling":
         graph = structured.get("graph", {})
         if structured.get("problem_type") == "library_shelving_shortest_path" and structured.get("heights") and structured.get("counts"):
@@ -214,8 +255,23 @@ def required_missing_slots(problem_type: str, structured: dict[str, Any]) -> lis
         for key in ["arrival_rate", "service_rate"]:
             if not _has_value(structured, key) and key not in structured.get("queueing", {}):
                 missing.append(key)
+        if (
+            not _has_value(structured, "servers")
+            and "servers" not in structured.get("queueing", {})
+            and not structured.get("optimize_servers")
+            and not structured.get("queueing", {}).get("optimize_servers")
+            and not structured.get("queueing", {}).get("nodes")
+        ):
+            missing.append("servers_or_server_range")
     elif kind == "decision_theory":
-        if structured.get("probability_tree") or structured.get("bayes") or structured.get("diagnostic_decision") or structured.get("forklift_decision") or structured.get("independent_probabilities"):
+        if (
+            structured.get("probability_tree")
+            or structured.get("bayes")
+            or structured.get("diagnostic_decision")
+            or structured.get("imperfect_information_decision")
+            or structured.get("forklift_decision")
+            or structured.get("independent_probabilities")
+        ):
             return []
         for key in ["alternatives", "states", "payoff_matrix"]:
             if not structured.get(key):
@@ -224,12 +280,47 @@ def required_missing_slots(problem_type: str, structured: dict[str, Any]) -> lis
         for key in ["players", "strategies", "payoff_matrix"]:
             if not structured.get(key):
                 missing.append(key)
+    elif kind == "game_theory":
+        game = structured.get("game", {})
+        if not game.get("players"):
+            missing.append("players")
+        if not game.get("row_strategies"):
+            missing.append("row_strategies")
+        if not game.get("column_strategies"):
+            missing.append("column_strategies")
+        if not game.get("payoff_matrix") and not game.get("payoff_pair_matrix"):
+            missing.append("payoff_matrix")
     elif kind == "dynamic_programming":
-        if not (structured.get("resource_allocation") or structured.get("stages")):
-            missing.append("stages_states_decisions_transition")
+        if structured.get("resource_allocation"):
+            spec = structured.get("resource_allocation", {})
+            if spec.get("total_resource") is None:
+                missing.append("total_resource")
+            if not spec.get("stage_returns"):
+                missing.append("stage_returns")
+        elif structured.get("stages"):
+            for idx, stage in enumerate(structured.get("stages", []), start=1):
+                if not stage.get("states"):
+                    missing.append(f"stage_{idx}.states")
+                if not stage.get("actions"):
+                    missing.append(f"stage_{idx}.actions")
+                if not stage.get("transitions"):
+                    missing.append(f"stage_{idx}.transitions")
+                if not stage.get("rewards"):
+                    missing.append(f"stage_{idx}.rewards")
+        elif structured.get("demands") and ("order_cost" in structured or "holding_cost" in structured):
+            return []
+        else:
+            missing.append("stages_states_decisions_transition_reward_boundary")
     elif kind == "markov_processes":
-        if not (structured.get("transition_matrix") or structured.get("markov_chain")):
+        markov = structured.get("markov") or structured.get("markov_chain") or {}
+        if not (structured.get("transition_matrix") or markov.get("transition_matrix")):
             missing.append("transition_matrix")
+        if not (structured.get("markov_states") or structured.get("states") or markov.get("states")):
+            missing.append("states")
+        if not (structured.get("time_step") or markov.get("time_step")):
+            missing.append("time_step")
+        if not (structured.get("requested_outputs") or markov.get("requested_outputs")):
+            missing.append("requested_outputs")
     return missing
 
 

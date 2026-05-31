@@ -233,6 +233,296 @@ def solve_diagnostic_decision_tree(problem: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def solve_imperfect_information_decision_tree(problem: dict[str, Any]) -> dict[str, Any]:
+    """Rollback a decision tree with imperfect sample information.
+
+    The structure is: choose no pilot or pilot; if pilot is chosen, observe one
+    signal, update state probabilities with Bayes, then choose the best action.
+    """
+    spec = problem.get("imperfect_information_decision", {})
+    states = spec.get("states", [])
+    actions = spec.get("actions", [])
+    signals = spec.get("signals", [])
+    pilot_cost = float(spec.get("information_cost", spec.get("pilot_cost", 0.0)))
+    unit = spec.get("unit", "payoff")
+    objective = str(spec.get("objective", spec.get("sense", "maximize"))).lower()
+    minimize = objective in {"minimize", "minimize_cost", "cost", "min"}
+    value_label = "Expected cost" if minimize else "EMV"
+    information_label = "research/pilot"
+
+    if not states or not actions or not signals:
+        return {"status": "needs_clarification", "message": "Missing states, actions, or pilot signals."}
+
+    state_names = [str(state["name"]) for state in states]
+    raw_priors = [max(0.0, float(state.get("probability", 0.0))) for state in states]
+    prior_total = sum(raw_priors)
+    priors = [p / prior_total for p in raw_priors] if prior_total else [1 / len(states)] * len(states)
+    prior_by_state = dict(zip(state_names, priors))
+
+    def action_payoff(action: dict[str, Any], state_name: str) -> float:
+        if "fixed_payoff" in action:
+            return float(action["fixed_payoff"])
+        payoffs = action.get("payoffs", {})
+        return float(payoffs.get(state_name, 0.0))
+
+    def expected_action_value(action: dict[str, Any], probabilities: dict[str, float]) -> float:
+        return sum(probabilities[state] * action_payoff(action, state) for state in state_names)
+
+    def best_action(probabilities: dict[str, float]) -> dict[str, Any]:
+        values = [
+            {
+                "action": action.get("name", f"action_{index + 1}"),
+                "expected_value": expected_action_value(action, probabilities),
+            }
+            for index, action in enumerate(actions)
+        ]
+        values.sort(key=lambda item: item["expected_value"], reverse=not minimize)
+        return values[0]
+
+    without_info_best = best_action(prior_by_state)
+    ev_without_information = without_info_best["expected_value"]
+
+    signal_results: list[dict[str, Any]] = []
+    ev_with_sample_information_before_cost = 0.0
+    for signal in signals:
+        signal_name = str(signal["name"])
+        likelihoods = {str(k): _clamp_probability(float(v)) for k, v in signal.get("likelihoods", {}).items()}
+        signal_probability = sum(prior_by_state[state] * likelihoods.get(state, 0.0) for state in state_names)
+        if signal_probability > 0:
+            posterior = {
+                state: prior_by_state[state] * likelihoods.get(state, 0.0) / signal_probability
+                for state in state_names
+            }
+        else:
+            posterior = dict(prior_by_state)
+        best = best_action(posterior)
+        ev_with_sample_information_before_cost += signal_probability * best["expected_value"]
+        action_values = [
+            {
+                "action": action.get("name", f"action_{index + 1}"),
+                "expected_value": expected_action_value(action, posterior),
+            }
+            for index, action in enumerate(actions)
+        ]
+        action_values.sort(key=lambda item: item["expected_value"], reverse=True)
+        signal_results.append(
+            {
+                "signal": signal_name,
+                "probability": signal_probability,
+                "likelihoods": likelihoods,
+                "posterior": posterior,
+                "action_values": action_values,
+                "best_action": best,
+            }
+        )
+
+    if minimize:
+        ev_with_sample_information_after_cost = ev_with_sample_information_before_cost + pilot_cost
+        sample_information_value = ev_without_information - ev_with_sample_information_before_cost
+        net_sample_information_value = ev_without_information - ev_with_sample_information_after_cost
+        perfect_information_value = sum(
+            prior_by_state[state] * min(action_payoff(action, state) for action in actions)
+            for state in state_names
+        )
+        piv = ev_without_information - perfect_information_value
+    else:
+        ev_with_sample_information_after_cost = ev_with_sample_information_before_cost - pilot_cost
+        sample_information_value = ev_with_sample_information_before_cost - ev_without_information
+        net_sample_information_value = ev_with_sample_information_after_cost - ev_without_information
+        perfect_information_value = sum(
+            prior_by_state[state] * max(action_payoff(action, state) for action in actions)
+            for state in state_names
+        )
+        piv = perfect_information_value - ev_without_information
+
+    root_options = [
+        {
+            "action": "without_pilot",
+            "value": ev_without_information,
+            "policy": without_info_best["action"],
+        },
+        {
+            "action": "with_pilot",
+            "value": ev_with_sample_information_after_cost,
+            "policy": "observe_signal_then_choose_best_action",
+        },
+    ]
+    root_options.sort(key=lambda item: item["value"], reverse=not minimize)
+
+    mermaid = _imperfect_information_mermaid(
+        states=state_names,
+        priors=prior_by_state,
+        signals=signal_results,
+        without_info=without_info_best,
+        ev_without=ev_without_information,
+        ev_with_before=ev_with_sample_information_before_cost,
+        ev_with_after=ev_with_sample_information_after_cost,
+        pilot_cost=pilot_cost,
+    )
+
+    md = "### Báo cáo Decision Tree với thông tin mẫu không hoàn hảo\n\n"
+    md += "#### 1. Cây quyết định\n\n"
+    md += f"{mermaid}\n\n"
+    md += "#### 2. Dữ liệu đầu vào\n\n"
+    action_headers = " | ".join(f"{action.get('name', '')} value" for action in actions)
+    md += f"| Actual situation | Prior probability | {action_headers} |\n"
+    md += "|---|---:|" + "---:|" * len(actions) + "\n"
+    for state in state_names:
+        action_values_for_state = " | ".join(f"{action_payoff(action, state):,.2f}" for action in actions)
+        md += (
+            f"| {state} | {prior_by_state[state]:.4f} | "
+            f"{action_values_for_state} |\n"
+        )
+    md += "\nLikelihood table: each entry is `P(signal given actual situation)`.\n\n"
+    md += "| Actual situation | " + " | ".join(signal["name"] for signal in signals) + " |\n"
+    md += "|---|" + "---:|" * len(signals) + "\n"
+    for state in state_names:
+        values = []
+        for signal in signals:
+            likelihoods = {str(k): _clamp_probability(float(v)) for k, v in signal.get("likelihoods", {}).items()}
+            values.append(f"{likelihoods.get(state, 0.0):.4f}")
+        md += f"| {state} | " + " | ".join(values) + " |\n"
+    md += "\n"
+    md += f"#### 3. Không dùng {information_label}\n\n"
+    md += f"| Action | {value_label} |\n|---|---:|\n"
+    for action in actions:
+        action_name = action.get("name", "")
+        md += f"| {action_name} | {expected_action_value(action, prior_by_state):,.2f} |\n"
+    md += "\nChi tiết phép tính:\n\n"
+    for action in actions:
+        action_name = action.get("name", "")
+        terms = [
+            f"{prior_by_state[state]:.4f} x {action_payoff(action, state):,.2f}"
+            for state in state_names
+        ]
+        md += f"- {action_name}: " + " + ".join(terms) + f" = **{expected_action_value(action, prior_by_state):,.2f} {unit}**\n"
+    md += f"\nChọn **{without_info_best['action']}**, {value_label} = **{ev_without_information:,.2f} {unit}**.\n\n"
+    md += f"#### 4. Bayes posterior sau {information_label}\n\n"
+    posterior_headers = " | ".join(f"P({state} given result)" for state in state_names)
+    md += f"| Signal | P(signal) | {posterior_headers} | Best action | Branch {value_label} |\n"
+    md += "|---|---:|" + "---:|" * len(state_names) + "---|---:|\n"
+    for row in signal_results:
+        post = " | ".join(f"{row['posterior'][state]:.4f}" for state in state_names)
+        md += (
+            f"| {row['signal']} | {row['probability']:.4f} | {post} | "
+            f"{row['best_action']['action']} | {row['best_action']['expected_value']:,.2f} |\n"
+        )
+    md += "\n"
+    for row in signal_results:
+        likelihoods = row["likelihoods"]
+        probability_terms = [
+            f"{prior_by_state[state]:.4f} x {likelihoods.get(state, 0.0):.4f}"
+            for state in state_names
+        ]
+        md += f"**{row['signal']}**\n\n"
+        md += f"- P(result) = " + " + ".join(probability_terms) + f" = **{row['probability']:.4f}**\n"
+        for state in state_names:
+            numerator = prior_by_state[state] * likelihoods.get(state, 0.0)
+            md += (
+                f"- P({state} given result) = ({prior_by_state[state]:.4f} x "
+                f"{likelihoods.get(state, 0.0):.4f}) / {row['probability']:.4f} "
+                f"= {numerator:.4f} / {row['probability']:.4f} = **{row['posterior'][state]:.4f}**\n"
+            )
+        md += f"\nAction {value_label} after this result:\n\n"
+        for action_value in row["action_values"]:
+            action = next((item for item in actions if item.get("name") == action_value["action"]), {})
+            terms = [
+                f"{row['posterior'][state]:.4f} x {action_payoff(action, state):,.2f}"
+                for state in state_names
+            ]
+            md += f"- {action_value['action']}: " + " + ".join(terms) + f" = **{action_value['expected_value']:,.2f} {unit}**\n"
+        md += f"- Decision at this branch: **{row['best_action']['action']}**\n\n"
+
+    md += "#### 5. Rollback tổng\n\n"
+    rollback_terms = [
+        f"{row['probability']:.4f} x {row['best_action']['expected_value']:,.2f}"
+        for row in signal_results
+    ]
+    md += (
+        f"- {value_label} with sample information before information cost = "
+        + " + ".join(rollback_terms)
+        + f" = **{ev_with_sample_information_before_cost:,.2f} {unit}**\n"
+    )
+    md += f"- Information cost = **{pilot_cost:,.2f} {unit}**\n"
+    if minimize:
+        md += (
+            f"- {value_label} with information after cost = {ev_with_sample_information_before_cost:,.2f} "
+            f"+ {pilot_cost:,.2f} = **{ev_with_sample_information_after_cost:,.2f} {unit}**\n"
+        )
+        md += f"- {value_label} without information = **{ev_without_information:,.2f} {unit}**\n"
+        md += (
+            f"- IISV = {ev_without_information:,.2f} - {ev_with_sample_information_before_cost:,.2f} "
+            f"= **{sample_information_value:,.2f} {unit}**\n"
+        )
+        md += (
+            f"- Net saving after paying information cost = {ev_without_information:,.2f} "
+            f"- {ev_with_sample_information_after_cost:,.2f} = **{net_sample_information_value:,.2f} {unit}**\n\n"
+        )
+        md += (
+            f"- Equivalent book payoff notation: without information = **{-ev_without_information:,.2f} {unit}**, "
+            f"with information after cost = **{-ev_with_sample_information_after_cost:,.2f} {unit}**\n"
+        )
+        md += (
+            f"- Perfect information expected cost = **{perfect_information_value:,.2f} {unit}**\n"
+            f"- PIV = {ev_without_information:,.2f} - {perfect_information_value:,.2f} "
+            f"= **{piv:,.2f} {unit}**\n\n"
+        )
+    else:
+        md += (
+            f"- {value_label} with information after cost = {ev_with_sample_information_before_cost:,.2f} "
+            f"- {pilot_cost:,.2f} = **{ev_with_sample_information_after_cost:,.2f} {unit}**\n"
+        )
+        md += f"- {value_label} without information = **{ev_without_information:,.2f} {unit}**\n"
+        md += (
+            f"- IISV = {ev_with_sample_information_before_cost:,.2f} - {ev_without_information:,.2f} "
+            f"= **{sample_information_value:,.2f} {unit}**\n"
+        )
+        md += (
+            f"- Net gain after paying information cost = {ev_with_sample_information_after_cost:,.2f} "
+            f"- {ev_without_information:,.2f} = **{net_sample_information_value:,.2f} {unit}**\n\n"
+        )
+        md += (
+            f"- Perfect information expected value = **{perfect_information_value:,.2f} {unit}**\n"
+            f"- PIV = {perfect_information_value:,.2f} - {ev_without_information:,.2f} "
+            f"= **{piv:,.2f} {unit}**\n\n"
+        )
+    md += "#### 6. Kết luận\n\n"
+    md += (
+        f"Chọn **{root_options[0]['action']}**. "
+        f"Nếu làm pilot, chính sách tối ưu là đổi sang electric only khi pilot indicates savings; "
+        f"các kết quả còn lại giữ petrol/no change.\n"
+    )
+
+    return {
+        "status": "computed",
+        "solver": "imperfect_information_decision_tree",
+        "unit": unit,
+        "prior_probabilities": prior_by_state,
+        "without_information": {
+            "best_action": without_info_best,
+            "expected_value": ev_without_information,
+        },
+        "signals": signal_results,
+        "with_sample_information": {
+            "expected_value_before_cost": ev_with_sample_information_before_cost,
+            "cost": pilot_cost,
+            "expected_value_after_cost": ev_with_sample_information_after_cost,
+        },
+        "sample_information_value": sample_information_value,
+        "net_sample_information_value": net_sample_information_value,
+        "perfect_information": {
+            "expected_value": perfect_information_value,
+            "value": piv,
+        },
+        "maximum_information_cost": sample_information_value,
+        "root_value": root_options[0]["value"],
+        "root_options": root_options,
+        "recommendation": root_options[0],
+        "mermaid": mermaid,
+        "markdown_report": md,
+    }
+
+
 def solve_forklift_decision_tree(problem: dict[str, Any]) -> dict[str, Any]:
     spec = problem.get("forklift_decision", {})
     new_cost = float(spec["new_purchase_cost"]) + float(spec["new_maintenance_cost"])
@@ -438,6 +728,30 @@ def _forklift_mermaid(**data: Any) -> str:
     ])
 
 
+def _imperfect_information_mermaid(**data: Any) -> str:
+    def money(value: float) -> str:
+        return f"{value:,.0f}"
+
+    lines = [
+        "```mermaid",
+        "flowchart LR",
+        '  R{"Decision"}',
+        f'  R -->|"Without pilot<br/>EV {money(data["ev_without"])}"| W["Best: {data["without_info"]["action"]}"]',
+        f'  R -->|"With pilot<br/>EV before cost {money(data["ev_with_before"])}<br/>cost {money(data["pilot_cost"])}<br/>net {money(data["ev_with_after"])}"| P(("Pilot result"))',
+    ]
+    for index, signal in enumerate(data["signals"], start=1):
+        signal_id = f"S{index}"
+        best = signal["best_action"]
+        lines.append(
+            f'  P -->|"{signal["signal"]}<br/>P={signal["probability"]:.3f}"| {signal_id}{{"Decision"}}'
+        )
+        lines.append(
+            f'  {signal_id} -->|"Best: {best["action"]}<br/>EV {money(best["expected_value"])}"| {signal_id}V["Rollback value"]'
+        )
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def _clamp_probability(value: float) -> float:
     return min(1.0, max(0.0, value))
 
@@ -572,6 +886,8 @@ def value_of_information(problem: dict[str, Any]) -> dict[str, Any]:
 def rollback_decision_tree(problem: dict[str, Any]) -> dict[str, Any]:
     nodes = {node["id"]: dict(node) for node in problem.get("decision_tree", [])}
     memo: dict[str, float] = {}
+    objective = str(problem.get("context", {}).get("objective_direction", "maximize")).lower()
+    minimize = objective in {"minimize", "minimize_cost", "cost", "min"}
 
     def value(node_id: str) -> float:
         if node_id in memo:
@@ -582,7 +898,11 @@ def rollback_decision_tree(problem: dict[str, Any]) -> dict[str, Any]:
         elif node["node_type"] == "chance":
             memo[node_id] = sum(float(nodes[child].get("probability", 0) or 0) * value(child) for child in node.get("children", []))
         else:
-            memo[node_id] = max((value(child) for child in node.get("children", [])), default=0.0)
+            child_node_values = [value(child) for child in node.get("children", [])]
+            if not child_node_values:
+                memo[node_id] = 0.0
+            else:
+                memo[node_id] = min(child_node_values) if minimize else max(child_node_values)
         return memo[node_id]
 
     roots = [node_id for node_id, node in nodes.items() if node["node_type"] == "decision"]
@@ -590,8 +910,56 @@ def rollback_decision_tree(problem: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Decision tree requires at least one decision node.")
     root = roots[0]
     child_values = [{"node": child, "label": nodes[child].get("label"), "value": value(child)} for child in nodes[root].get("children", [])]
-    child_values.sort(key=lambda item: item["value"], reverse=True)
-    return {"status": "computed", "root_value": value(root), "branches": child_values, "recommendation": child_values[0] if child_values else None}
+    child_values.sort(key=lambda item: item["value"], reverse=not minimize)
+    md = "### Decision Tree Rollback\n\n"
+    md += "#### Decision tree\n\n"
+    md += _generic_decision_tree_mermaid(nodes, value) + "\n\n"
+    md += "#### Rollback results\n\n"
+    md += f"- Objective: **{'minimize expected cost' if minimize else 'maximize expected payoff'}**\n"
+    md += f"- Root value: **{value(root):,.4f}**\n\n"
+    md += "| Root branch | Rollback value |\n|---|---:|\n"
+    for branch in child_values:
+        md += f"| {branch.get('label') or branch['node']} | {branch['value']:,.4f} |\n"
+    if child_values:
+        md += f"\nRecommendation: **{child_values[0].get('label') or child_values[0]['node']}**.\n"
+    return {
+        "status": "computed",
+        "solver": "decision_tree_rollback",
+        "objective": "minimize" if minimize else "maximize",
+        "root_value": value(root),
+        "branches": child_values,
+        "recommendation": child_values[0] if child_values else None,
+        "markdown_report": md,
+    }
+
+
+def _generic_decision_tree_mermaid(nodes: dict[str, dict[str, Any]], value_fn: Any) -> str:
+    lines = ["```mermaid", "flowchart LR"]
+
+    def node_shape(node_id: str, node: dict[str, Any]) -> str:
+        label = str(node.get("label") or node_id).replace('"', "'")
+        rollback = value_fn(node_id)
+        text = f"{label}<br/>EV {rollback:,.2f}"
+        node_type = node.get("node_type")
+        if node_type == "decision":
+            return f'  {node_id}{{"{text}"}}'
+        if node_type == "chance":
+            return f'  {node_id}(("{text}"))'
+        return f'  {node_id}["{text}"]'
+
+    for node_id, node in nodes.items():
+        lines.append(node_shape(node_id, node))
+    for node_id, node in nodes.items():
+        for child in node.get("children", []):
+            child_node = nodes.get(child, {})
+            probability = child_node.get("probability")
+            branch_label = str(child_node.get("label") or child)
+            if probability is not None:
+                branch_label = f"{branch_label}<br/>P={float(probability):.3f}"
+            branch_label = branch_label.replace('"', "'")
+            lines.append(f'  {node_id} -->|"{branch_label}"| {child}')
+    lines.append("```")
+    return "\n".join(lines)
 
 
 def solve_binary_event_tree(problem: dict[str, Any]) -> dict[str, Any]:

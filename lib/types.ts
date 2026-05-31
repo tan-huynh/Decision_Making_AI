@@ -95,4 +95,20 @@ export type AnalysisResult = {
     }>;
     summary: string;
   };
+  autonomy?: {
+    mode: string;
+    route: string;
+    selected_solver: string;
+    case_type: string;
+    confidence: number;
+    reason: string;
+    agent_steps?: string[];
+    similar_cases?: Array<{ route?: string; case_type?: string; selected_solver?: string; created_at?: string }>;
+    learning_profile?: {
+      events?: number;
+      routes?: Record<string, number>;
+      case_types?: Record<string, number>;
+      solvers?: Record<string, number>;
+    };
+  };
 };

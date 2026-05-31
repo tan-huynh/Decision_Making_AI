@@ -1,7 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, BrainCircuit, Download, ImageDown, Maximize2, Minimize2, Plus, RefreshCw, Save, Sparkles, Trash2 } from "lucide-react";
+import {
+  Activity,
+  BrainCircuit,
+  Download,
+  ImageDown,
+  Maximize2,
+  Minimize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  RefreshCw,
+  Save,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -98,6 +114,22 @@ type EngineeringResult = {
   };
   message?: string;
   questions?: string[];
+  autonomy?: {
+    mode: string;
+    route: string;
+    selected_solver: string;
+    case_type: string;
+    confidence: number;
+    reason: string;
+    agent_steps?: string[];
+    similar_cases?: Array<{ route?: string; case_type?: string; selected_solver?: string; created_at?: string }>;
+    learning_profile?: {
+      events?: number;
+      routes?: Record<string, number>;
+      case_types?: Record<string, number>;
+      solvers?: Record<string, number>;
+    };
+  };
   recognition_gate?: {
     recognized_problem_type?: string;
     recognized_subtype?: string;
@@ -109,6 +141,72 @@ type EngineeringResult = {
     decision_to_solve?: string;
   };
 };
+
+function formatMetric(value: number | string | undefined, digits = 1) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? String(value) : value.toFixed(digits);
+  }
+  return value || "n/a";
+}
+
+function buildAllocationMatrix(data: EngineeringResult) {
+  const supplies = data.problem?.graph?.supplies || {};
+  const demands = data.problem?.graph?.demands || {};
+  const allocations = data.solved?.result?.allocations || [];
+  const sources = Object.keys(supplies);
+  const destinations = Object.keys(demands);
+  if (!sources.length || !destinations.length || !allocations.length) return null;
+  const lookup = new Map(allocations.map((item) => [`${item.from}::${item.to}`, item.amount]));
+  return { sources, destinations, supplies, demands, lookup };
+}
+
+function engineeringMarkdown(data: EngineeringResult) {
+  let md = recognitionGateMarkdown(data) || "";
+  md += "## Mô hình EDSS đã hiểu\n\n";
+  md += `**Loại bài toán**: ${data.solved?.problem_type || data.problem?.problem_type || "unknown"}\n\n`;
+  if (data.solved?.model?.formulation) {
+    md += "### Công thức / Formulation\n\n";
+    md += "```text\n" + data.solved.model.formulation + "\n```\n\n";
+  }
+  if (data.problem) {
+    const compactProblem = {
+      probability_tree: data.problem.probability_tree,
+      bayes: data.problem.bayes,
+      independent_probabilities: data.problem.independent_probabilities,
+      resource_allocation: data.problem.resource_allocation,
+      graph: data.problem.graph,
+      alternatives: data.problem.alternatives,
+      states: data.problem.states,
+      payoff_matrix: data.problem.payoff_matrix,
+      assumptions: data.problem.assumptions
+    };
+    md += "### Dữ liệu mô hình\n\n";
+    md += "```json\n" + JSON.stringify(compactProblem, null, 2) + "\n```\n\n";
+  }
+  if (data.solved?.validation) {
+    md += "### Validation trước khi giải\n\n";
+    md += `**Hợp lệ**: ${data.solved.validation.is_valid ? "Có" : "Không"}\n\n`;
+    if (data.solved.validation.errors?.length) md += `**Errors**:\n${data.solved.validation.errors.map((item) => `- ${item}`).join("\n")}\n\n`;
+    if (data.solved.validation.warnings?.length) md += `**Warnings**:\n${data.solved.validation.warnings.map((item) => `- ${item}`).join("\n")}\n\n`;
+    if (data.solved.validation.info?.length) md += `**Info**:\n${data.solved.validation.info.map((item) => `- ${item}`).join("\n")}\n\n`;
+  }
+  md += "## Kết quả solver\n\n";
+  if (data.solved?.result?.markdown_report) {
+    md += data.solved.result.markdown_report;
+  } else if (data.solved?.result) {
+    md += `**Status**: ${data.solved.result.status}\n\n`;
+    if (data.solved.problem_type) md += `**Loại bài toán**: ${data.solved.problem_type}\n\n`;
+    md += jsonToMarkdown(data.solved.result as Record<string, unknown>);
+    if (data.solved.recommendation_explanation) md += `\n\n## Khuyến nghị\n\n${data.solved.recommendation_explanation}\n`;
+  }
+  md += "\n\n## Ghi chú chất lượng quyết định\n\nKết quả số được tính bằng solver deterministic, không dùng LLM để tính toán. Outcome tốt sau thực tế có thể do may mắn; quyết định tốt là quyết định dựa trên mô hình đúng, dữ liệu đủ và giả định đã kiểm tra độ nhạy.\n";
+  return md;
+}
+
+function copyEngineeringReport(data: EngineeringResult) {
+  if (typeof navigator === "undefined") return;
+  navigator.clipboard?.writeText(engineeringMarkdown(data)).catch(() => undefined);
+}
 
 type EngineeringHistoryItem = {
   id: string;
@@ -263,81 +361,139 @@ function EngineeringSolutionView({ data }: { data: EngineeringResult }) {
     );
   }
 
-  let md = recognitionGateMarkdown(data) || "";
-  md += "## Mô hình EDSS đã hiểu\n\n";
-  md += `**Loại bài toán**: ${data.solved.problem_type || data.problem?.problem_type || "unknown"}\n\n`;
-  if (data.solved.model?.formulation) {
-    md += "### Công thức / Formulation\n\n";
-    md += "```text\n" + data.solved.model.formulation + "\n```\n\n";
-  }
-  if (data.problem) {
-    const compactProblem = {
-      probability_tree: data.problem.probability_tree,
-      bayes: data.problem.bayes,
-      independent_probabilities: data.problem.independent_probabilities,
-      resource_allocation: data.problem.resource_allocation,
-      graph: data.problem.graph,
-      alternatives: data.problem.alternatives,
-      states: data.problem.states,
-      payoff_matrix: data.problem.payoff_matrix,
-      assumptions: data.problem.assumptions
-    };
-    md += "### Dữ liệu mô hình\n\n";
-    md += "```json\n" + JSON.stringify(compactProblem, null, 2) + "\n```\n\n";
-  }
-  if (data.solved.validation) {
-    md += "### Validation trước khi giải\n\n";
-    md += `**Hợp lệ**: ${data.solved.validation.is_valid ? "Có" : "Không"}\n\n`;
-    if (data.solved.validation.errors?.length) md += `**Errors**:\n${data.solved.validation.errors.map((item) => `- ${item}`).join("\n")}\n\n`;
-    if (data.solved.validation.warnings?.length) md += `**Warnings**:\n${data.solved.validation.warnings.map((item) => `- ${item}`).join("\n")}\n\n`;
-    if (data.solved.validation.info?.length) md += `**Info**:\n${data.solved.validation.info.map((item) => `- ${item}`).join("\n")}\n\n`;
-  }
-  md += "## Kết quả solver\n\n";
-  if (data.solved.result.markdown_report) {
-    md += data.solved.result.markdown_report;
-  } else {
-    md += `**Status**: ${data.solved.result.status}\n\n`;
-    if (data.solved.problem_type) {
-      md += `**Loại bài toán**: ${data.solved.problem_type}\n\n`;
-    }
-    md += jsonToMarkdown(data.solved.result as Record<string, unknown>);
-    if (data.solved.recommendation_explanation) {
-      md += `\n\n## Khuyến nghị\n\n${data.solved.recommendation_explanation}\n`;
-    }
-  }
-  md += "\n\n## Ghi chú chất lượng quyết định\n\nKết quả số được tính bằng solver deterministic, không dùng LLM để tính toán. Outcome tốt sau thực tế có thể do may mắn; quyết định tốt là quyết định dựa trên mô hình đúng, dữ liệu đủ và giả định đã kiểm tra độ nhạy.\n";
+  const solved = data.solved.result;
+  const matrix = buildAllocationMatrix(data);
+  const certificate = solved.optimality_certificate;
+  const reducedCosts = certificate?.reduced_costs ? Object.entries(certificate.reduced_costs).filter(([key]) => !key.includes("_dummy")).slice(0, 12) : [];
+  const md = engineeringMarkdown(data);
 
   return (
-    <div className="md-view" style={{ marginTop: 16 }}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        urlTransform={markdownUrlTransform}
-        components={{
-          pre({ children, ...props }) {
-            const raw = String((children as any)?.props?.children ?? "");
-            const className = String((children as any)?.props?.className ?? "");
-            if (className.includes("language-mermaid") || isMermaidChart(raw)) {
-              return <MermaidView chart={normalizeMermaidChart(raw)} />;
-            }
-            return <pre {...props}>{children}</pre>;
-          },
-          code({ className, children, ...props }) {
-            const match = /language-(\w+)/.exec(className || "");
-            const raw = String(children).replace(/\n$/, "");
-            if (match?.[1] === "mermaid" || isMermaidChart(raw)) {
-              return <MermaidView chart={normalizeMermaidChart(raw)} />;
-            }
-            return (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            );
-          },
-        }}
-      >
-        {md}
-      </ReactMarkdown>
+    <div className="solver-report">
+      <div className="solver-summary">
+        <div>
+          <span className="eyebrow">EDSS result</span>
+          <h2>{solved.recommendation || data.solved.recommendation_explanation || "Solver completed"}</h2>
+          <p>
+            Hệ thống nhận dạng <strong>{data.solved.problem_type || data.problem?.problem_type || "unknown"}</strong>,
+            chọn <strong>{solved.solver || data.autonomy?.selected_solver || "solver"}</strong>, và trả nghiệm có thể audit.
+          </p>
+        </div>
+        <div className="solver-kpis">
+          <div><span>Status</span><strong>{solved.status || data.status}</strong></div>
+          <div><span>Objective</span><strong>{formatMetric(solved.objective_value)}</strong></div>
+          <div><span>Optimal proof</span><strong>{certificate?.is_optimal ? "MODI optimal" : solved.status || "n/a"}</strong></div>
+          <div><span>Autonomous</span><strong>{data.autonomy ? `${data.autonomy.case_type} ${Math.round(data.autonomy.confidence * 100)}%` : "n/a"}</strong></div>
+        </div>
+      </div>
+
+      {matrix ? (
+        <section className="solver-section">
+          <div className="section-head">
+            <h3>Ma trận phân bổ tối ưu</h3>
+            <button className="button secondary" onClick={() => copyEngineeringReport(data)}>Copy lời giải</button>
+          </div>
+          <div className="table-wrap">
+            <table className="solver-table allocation-matrix">
+              <thead>
+                <tr>
+                  <th>Nguồn / Đích</th>
+                  {matrix.destinations.map((destination) => <th key={destination}>{destination}</th>)}
+                  <th>Cung</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matrix.sources.map((source) => (
+                  <tr key={source}>
+                    <th>{source}</th>
+                    {matrix.destinations.map((destination) => {
+                      const amount = matrix.lookup.get(`${source}::${destination}`) || 0;
+                      return <td key={destination} className={amount > 0 ? "allocated" : ""}>{formatMetric(amount)}</td>;
+                    })}
+                    <td>{formatMetric(matrix.supplies[source])}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <th>Nhu cầu</th>
+                  {matrix.destinations.map((destination) => <td key={destination}>{formatMetric(matrix.demands[destination])}</td>)}
+                  <td>{formatMetric(Object.values(matrix.supplies).reduce((sum, value) => sum + Number(value), 0))}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {solved.allocations?.length ? (
+        <section className="solver-section">
+          <h3>Routing được sử dụng</h3>
+          <div className="table-wrap">
+            <table className="solver-table">
+              <thead>
+                <tr><th>Từ</th><th>Đến</th><th>Lượng</th><th>Đơn giá</th><th>Chi phí</th></tr>
+              </thead>
+              <tbody>
+                {solved.allocations.map((item) => (
+                  <tr key={`${item.from}-${item.to}`}>
+                    <td>{item.from}</td>
+                    <td>{item.to}</td>
+                    <td>{formatMetric(item.amount)}</td>
+                    <td>{formatMetric(item.unit_cost)}</td>
+                    <td>{formatMetric(item.amount * item.unit_cost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="solver-section">
+        <h3>Autonomous agent</h3>
+        <div className="agent-flow">
+          {(data.autonomy?.agent_steps || ["recognize_case", "validate_inputs", "solve", "audit", "learn"]).map((step, index) => (
+            <div key={`${step}-${index}`}><span>{index + 1}</span>{step.replace(/_/g, " ")}</div>
+          ))}
+        </div>
+      </section>
+
+      <details className="solver-details">
+        <summary>Chi tiết mô hình, validation và proof</summary>
+        {reducedCosts.length ? (
+          <div className="table-wrap">
+            <table className="solver-table compact">
+              <thead><tr><th>Tuyến chưa dùng</th><th>Reduced cost</th></tr></thead>
+              <tbody>
+                {reducedCosts.map(([route, value]) => (
+                  <tr key={route}><td>{route}</td><td>{formatMetric(Number(value))}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+        <div className="md-view compact-md">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            urlTransform={markdownUrlTransform}
+            components={{
+              pre({ children, ...props }) {
+                const raw = String((children as any)?.props?.children ?? "");
+                const className = String((children as any)?.props?.className ?? "");
+                if (className.includes("language-mermaid") || isMermaidChart(raw)) return <MermaidView chart={normalizeMermaidChart(raw)} />;
+                return <pre {...props}>{children}</pre>;
+              },
+              code({ className, children, ...props }) {
+                const match = /language-(\w+)/.exec(className || "");
+                const raw = String(children).replace(/\n$/, "");
+                if (match?.[1] === "mermaid" || isMermaidChart(raw)) return <MermaidView chart={normalizeMermaidChart(raw)} />;
+                return <code className={className} {...props}>{children}</code>;
+              },
+            }}
+          >
+            {md}
+          </ReactMarkdown>
+        </div>
+      </details>
     </div>
   );
 }
@@ -349,7 +505,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [learning, setLearning] = useState(false);
-  const [chartMode, setChartMode] = useState<"map" | "score" | "regret" | "tree">("map");
+  const [chartMode, setChartMode] = useState<"map" | "logic" | "score" | "regret" | "tree">("map");
   const [error, setError] = useState("");
   const [engineeringText, setEngineeringText] = useState("");
   const [engineeringResult, setEngineeringResult] = useState<EngineeringResult | null>(null);
@@ -360,6 +516,11 @@ export default function Home() {
   const [mapFullscreen, setMapFullscreen] = useState(false);
   const [visibleMapKinds, setVisibleMapKinds] = useState(["scenario", "factor", "evidence"]);
   const [selectedMapNode, setSelectedMapNode] = useState<{ label: string; kind: string; detail: string } | null>(null);
+  const [collapsedRegions, setCollapsedRegions] = useState({
+    sidebar: false,
+    workbench: false,
+    insight: false,
+  });
   const mapShellRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -392,6 +553,13 @@ export default function Home() {
   }, []);
 
   const winner = useMemo(() => result?.option_results[0], [result]);
+  const runnerUp = useMemo(() => result?.option_results[1], [result]);
+  const resultByOptionId = useMemo(
+    () => new Map(result?.option_results.map((item) => [item.id, item]) || []),
+    [result]
+  );
+  const scoreGap = winner && runnerUp ? winner.risk_adjusted_score - runnerUp.risk_adjusted_score : null;
+  const topSensitivity = result?.sensitivity?.[0];
   const modelOptions = useMemo(
     () => Array.from(new Set(status.models.length ? status.models : [decision.model, "llama3.1", "qwen2.5", "mistral"])),
     [decision.model, status.models]
@@ -637,8 +805,24 @@ export default function Home() {
     ));
   }
 
+  function toggleWorkbench() {
+    setCollapsedRegions((current) => ({
+      ...current,
+      workbench: !current.workbench,
+      insight: current.insight && !current.workbench ? false : current.insight,
+    }));
+  }
+
+  function toggleInsight() {
+    setCollapsedRegions((current) => ({
+      ...current,
+      insight: !current.insight,
+      workbench: current.workbench && !current.insight ? false : current.workbench,
+    }));
+  }
+
   return (
-    <main className="shell">
+    <main className={`shell ${collapsedRegions.sidebar ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <h1>AI-Powered Decision Making</h1>
@@ -646,38 +830,46 @@ export default function Home() {
             <span className={`dot ${status.ok ? "ok" : ""}`} />
             Ollama
           </span>
+          <button
+            className="icon-button layout-toggle"
+            title={collapsedRegions.sidebar ? "Mở sidebar" : "Thu sidebar"}
+            onClick={() => setCollapsedRegions((current) => ({ ...current, sidebar: !current.sidebar }))}
+          >
+            {collapsedRegions.sidebar ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          </button>
         </div>
 
-        <a href="/edss" className="button" style={{ margin: "0 16px 8px", textAlign: "center", textDecoration: "none", background: "linear-gradient(135deg, #3b82f6, #6366f1)", color: "white", borderColor: "transparent" }}>
-          🧠 EDSS Dashboard — Engineering Solver
-        </a>
+        <div className="sidebar-content">
+          <a href="/edss" className="button" style={{ margin: "0 16px 8px", textAlign: "center", textDecoration: "none", background: "linear-gradient(135deg, #3b82f6, #6366f1)", color: "white", borderColor: "transparent" }}>
+            🧠 EDSS Dashboard — Engineering Solver
+          </a>
 
-        <section>
-          <h2>Bài toán</h2>
-          <div className="field">
-            <label>Câu hỏi quyết định</label>
-            <textarea value={decision.question} onChange={(event) => setDecision({ ...decision, question: event.target.value })} />
-          </div>
-          <div className="field">
-            <label>Lĩnh vực</label>
-            <select value={decision.domain} onChange={(event) => setDecision({ ...decision, domain: event.target.value })}>
-              <option value="life">Đời sống cá nhân</option>
-              <option value="career">Sự nghiệp</option>
-              <option value="income">Tăng thu nhập</option>
-              <option value="finance">Tài chính</option>
-              <option value="health">Sức khỏe</option>
-              <option value="relationship">Quan hệ</option>
-              <option value="business">Kinh doanh</option>
-              <option value="education">Học tập</option>
-              <option value="wisdom">Kinh nghiệm sống</option>
-              <option value="legal">Pháp lý</option>
-              <option value="safety">An toàn</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>Mục tiêu tối ưu</label>
-            <textarea value={decision.objective} onChange={(event) => setDecision({ ...decision, objective: event.target.value })} />
-          </div>
+          <section>
+            <h2>Bài toán</h2>
+            <div className="field">
+              <label>Câu hỏi quyết định</label>
+              <textarea value={decision.question} onChange={(event) => setDecision({ ...decision, question: event.target.value })} />
+            </div>
+            <div className="field">
+              <label>Lĩnh vực</label>
+              <select value={decision.domain} onChange={(event) => setDecision({ ...decision, domain: event.target.value })}>
+                <option value="life">Đời sống cá nhân</option>
+                <option value="career">Sự nghiệp</option>
+                <option value="income">Tăng thu nhập</option>
+                <option value="finance">Tài chính</option>
+                <option value="health">Sức khỏe</option>
+                <option value="relationship">Quan hệ</option>
+                <option value="business">Kinh doanh</option>
+                <option value="education">Học tập</option>
+                <option value="wisdom">Kinh nghiệm sống</option>
+                <option value="legal">Pháp lý</option>
+                <option value="safety">An toàn</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Mục tiêu tối ưu</label>
+              <textarea value={decision.objective} onChange={(event) => setDecision({ ...decision, objective: event.target.value })} />
+            </div>
           <div className="field">
             <label>Bối cảnh và ràng buộc</label>
             <textarea value={decision.context} onChange={(event) => setDecision({ ...decision, context: event.target.value })} />
@@ -732,91 +924,116 @@ export default function Home() {
             </button>
           </div>
           {error ? <p className="small" style={{ color: "var(--red)" }}>{error}</p> : null}
-        </section>
+          </section>
 
-        <section>
-          <h2>Học từ kết quả</h2>
-          <p className="small">Ghi nhận outcome để hệ thống hiệu chỉnh confidence và case memory cho các lần phân tích sau.</p>
-          <div className="row">
-            <button className="button secondary" disabled={!result || learning} onClick={() => learn("success")}>Thành công</button>
-            <button className="button secondary" disabled={!result || learning} onClick={() => learn("mixed")}>Lẫn lộn</button>
-            <button className="button secondary" disabled={!result || learning} onClick={() => learn("failure")}>Thất bại</button>
-          </div>
-        </section>
-
-        <section>
-          <h2>Engineering Solver</h2>
-          <p className="small">Paste bài toán kỹ thuật/OR ở đây. Hiện hỗ trợ transportation, quy hoạch động phân bổ tài nguyên, và cây xác suất.</p>
-          <div className="field">
-            <label>Bài toán kỹ thuật</label>
-            <textarea
-              value={engineeringText}
-              onChange={(event) => setEngineeringText(event.target.value)}
-              placeholder="Dán bài toán truyền tải điện, production mix, logistics..."
-            />
-          </div>
-          <button className="button secondary" onClick={solveEngineeringText} disabled={engineeringLoading || !engineeringText.trim()}>
-            <Sparkles size={16} />
-            {engineeringLoading ? "Đang giải..." : "Giải bằng EDSS"}
-          </button>
-        </section>
-
-        <section>
-          <div className="history-head">
-            <div>
-              <h2>History bài đã giải</h2>
-              <p className="small">Lưu trên trình duyệt local của máy này.</p>
+          <section>
+            <h2>Học từ kết quả</h2>
+            <p className="small">Ghi nhận outcome để hệ thống hiệu chỉnh confidence và case memory cho các lần phân tích sau.</p>
+            <div className="row">
+              <button className="button secondary" disabled={!result || learning} onClick={() => learn("success")}>Thành công</button>
+              <button className="button secondary" disabled={!result || learning} onClick={() => learn("mixed")}>Lẫn lộn</button>
+              <button className="button secondary" disabled={!result || learning} onClick={() => learn("failure")}>Thất bại</button>
             </div>
-            <button className="icon-button" title="Xóa toàn bộ history" onClick={clearEngineeringHistory} disabled={!engineeringHistory.length}>
-              <Trash2 size={15} />
+          </section>
+
+          <section>
+            <h2>Engineering Solver</h2>
+            <p className="small">Paste bài toán kỹ thuật/OR ở đây. Hiện hỗ trợ transportation, quy hoạch động phân bổ tài nguyên, và cây xác suất.</p>
+            <div className="field">
+              <label>Bài toán kỹ thuật</label>
+              <textarea
+                value={engineeringText}
+                onChange={(event) => setEngineeringText(event.target.value)}
+                placeholder="Dán bài toán truyền tải điện, production mix, logistics..."
+              />
+            </div>
+            <button className="button secondary" onClick={solveEngineeringText} disabled={engineeringLoading || !engineeringText.trim()}>
+              <Sparkles size={16} />
+              {engineeringLoading ? "Đang giải..." : "Giải bằng EDSS"}
             </button>
-          </div>
-          {engineeringHistory.length ? (
-            <div className="history-list">
-              {engineeringHistory.map((item) => (
-                <div className="history-item" key={item.id}>
-                  <button className="history-main" onClick={() => loadEngineeringHistory(item)} title="Mở lại bài đã giải">
-                    <strong>{item.title}</strong>
-                    <span>{item.problemType || "unknown"} · {new Date(item.createdAt).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" })}</span>
-                  </button>
-                  <button className="icon-button" title="Xóa bài này khỏi history" onClick={() => deleteEngineeringHistory(item.id)}>
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
+          </section>
+
+          <section>
+            <div className="history-head">
+              <div>
+                <h2>History bài đã giải</h2>
+                <p className="small">Lưu trên trình duyệt local của máy này.</p>
+              </div>
+              <button className="icon-button" title="Xóa toàn bộ history" onClick={clearEngineeringHistory} disabled={!engineeringHistory.length}>
+                <Trash2 size={15} />
+              </button>
             </div>
-          ) : (
-            <p className="small">Chưa có bài nào trong history.</p>
-          )}
-        </section>
+            {engineeringHistory.length ? (
+              <div className="history-list">
+                {engineeringHistory.map((item) => (
+                  <div className="history-item" key={item.id}>
+                    <button className="history-main" onClick={() => loadEngineeringHistory(item)} title="Mở lại bài đã giải">
+                      <strong>{item.title}</strong>
+                      <span>{item.problemType || "unknown"} · {new Date(item.createdAt).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" })}</span>
+                    </button>
+                    <button className="icon-button" title="Xóa bài này khỏi history" onClick={() => deleteEngineeringHistory(item.id)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="small">Chưa có bài nào trong history.</p>
+            )}
+          </section>
+        </div>
       </aside>
 
       <section className="main">
         <div className="toolbar">
           <div>
-            <strong>{winner ? <span className="winner">Đề xuất: {winner.name}</span> : "Decision workbench"}</strong>
+            <strong className="toolbar-title">{winner ? <span className="winner">Đề xuất: {winner.name}</span> : "Decision workbench"}</strong>
             <div className="small">Expected utility, risk adjustment, regret, sensitivity, VOI, AI critique.</div>
           </div>
-          <div className="tabs">
-            <button className={chartMode === "map" ? "active" : ""} onClick={() => setChartMode("map")}>Map</button>
-            <button className={chartMode === "score" ? "active" : ""} onClick={() => setChartMode("score")}>Score</button>
-            <button className={chartMode === "regret" ? "active" : ""} onClick={() => setChartMode("regret")}>Regret</button>
-            <button className={chartMode === "tree" ? "active" : ""} onClick={() => setChartMode("tree")}>Tree</button>
+          <div className="toolbar-actions">
+            <div className="tabs">
+              <button className={chartMode === "map" ? "active" : ""} onClick={() => setChartMode("map")}>Map</button>
+              <button className={chartMode === "logic" ? "active" : ""} onClick={() => setChartMode("logic")}>Logic</button>
+              <button className={chartMode === "score" ? "active" : ""} onClick={() => setChartMode("score")}>Score</button>
+              <button className={chartMode === "regret" ? "active" : ""} onClick={() => setChartMode("regret")}>Regret</button>
+              <button className={chartMode === "tree" ? "active" : ""} onClick={() => setChartMode("tree")}>Tree</button>
+            </div>
           </div>
         </div>
 
-        <div className="grid">
-          <div className="panel">
+        <div className={`grid ${collapsedRegions.workbench ? "workbench-collapsed" : ""} ${collapsedRegions.insight ? "insight-collapsed" : ""}`}>
+          {collapsedRegions.workbench ? (
+            <button className="collapsed-rail" title="Mở vùng lựa chọn" onClick={toggleWorkbench}>
+              <PanelRightOpen size={16} />
+              <span>Lựa chọn</span>
+            </button>
+          ) : (
+          <div className="panel workbench-panel">
             <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
               <h2 style={{ margin: 0 }}>Lựa chọn và tình huống</h2>
-              <button className="button secondary" onClick={() => setDecision({ ...decision, options: [...decision.options, emptyOption(decision.options.length)] })}>
-                <Plus size={16} /> Thêm
-              </button>
+              <div className="row">
+                <button className="icon-button" title="Thu vùng lựa chọn" onClick={toggleWorkbench}>
+                  <PanelLeftClose size={16} />
+                </button>
+                <button className="button secondary" onClick={() => setDecision({ ...decision, options: [...decision.options, emptyOption(decision.options.length)] })}>
+                  <Plus size={16} /> Thêm
+                </button>
+              </div>
             </div>
-            {decision.options.map((option, optionIndex) => (
+            {decision.options.map((option, optionIndex) => {
+              const optionResult = resultByOptionId.get(option.id);
+              return (
               <div className="option" key={option.id}>
                 <div className="option-head">
-                  <input className="option-title" value={option.name} onChange={(event) => updateOption(option.id, { name: event.target.value })} />
+                  <div className="option-title-wrap">
+                    <span className="option-index">Option {optionIndex + 1}</span>
+                    <input className="option-title" value={option.name} onChange={(event) => updateOption(option.id, { name: event.target.value })} />
+                  </div>
+                  {optionResult ? (
+                    <div className="score-pill" title="Risk-adjusted score">
+                      {optionResult.risk_adjusted_score.toFixed(1)}
+                    </div>
+                  ) : null}
                   <button
                     className="icon-button"
                     title="Xóa lựa chọn"
@@ -836,8 +1053,15 @@ export default function Home() {
                     <input type="number" min="0" max="1" step="0.05" value={option.reversibility} onChange={(event) => updateOption(option.id, { reversibility: Number(event.target.value) })} />
                   </div>
                 </div>
-                {option.scenarios.map((scenario, scenarioIndex) => (
-                  <div className="row" key={`${option.id}-${scenarioIndex}`}>
+                <div className="scenario-table">
+                  <div className="scenario-row scenario-head">
+                    <span>Kết quả</span>
+                    <span>Xác suất</span>
+                    <span>Giá trị</span>
+                    <span>Đóng góp</span>
+                  </div>
+                  {option.scenarios.map((scenario, scenarioIndex) => (
+                  <div className="scenario-row" key={`${option.id}-${scenarioIndex}`}>
                     <input
                       value={scenario.name}
                       onChange={(event) => {
@@ -846,7 +1070,6 @@ export default function Home() {
                       }}
                     />
                     <input
-                      title="Xác suất"
                       type="number"
                       min="0"
                       max="1"
@@ -858,7 +1081,6 @@ export default function Home() {
                       }}
                     />
                     <input
-                      title="Utility"
                       type="number"
                       value={scenario.utility}
                       onChange={(event) => {
@@ -866,8 +1088,12 @@ export default function Home() {
                         updateOption(option.id, { scenarios });
                       }}
                     />
+                    <span className="scenario-contribution">
+                      {optionResult?.scenarios?.[scenarioIndex]?.contribution.toFixed(1) ?? "-"}
+                    </span>
                   </div>
-                ))}
+                  ))}
+                </div>
                 <button
                   className="button secondary"
                   onClick={() =>
@@ -879,10 +1105,51 @@ export default function Home() {
                   <Plus size={16} /> Thêm tình huống
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
+          )}
 
-          <div className="panel">
+          {collapsedRegions.insight ? (
+            <button className="collapsed-rail" title="Mở vùng biểu đồ" onClick={toggleInsight}>
+              <PanelLeftOpen size={16} />
+              <span>Bản đồ</span>
+            </button>
+          ) : (
+          <div className="panel insight-panel">
+            <div className="insight-head">
+              <h2>{result ? "Kết quả và bản đồ quyết định" : "Bản đồ quyết định"}</h2>
+              <button className="icon-button" title="Thu vùng biểu đồ" onClick={toggleInsight}>
+                <PanelRightClose size={16} />
+              </button>
+            </div>
+            {result ? (
+              <div className="recommendation-panel">
+                <div>
+                  <span className="eyebrow">Recommendation</span>
+                  <h2>{winner?.name}</h2>
+                  <p>{result.summary}</p>
+                </div>
+                <div className="recommendation-stats">
+                  <div>
+                    <span>Autonomous route</span>
+                    <strong>{result.autonomy ? result.autonomy.selected_solver : "manual"}</strong>
+                  </div>
+                  <div>
+                    <span>Score gap</span>
+                    <strong>{scoreGap === null ? "n/a" : scoreGap.toFixed(1)}</strong>
+                  </div>
+                  <div>
+                    <span>Top sensitivity</span>
+                    <strong>{topSensitivity ? topSensitivity.variable : "n/a"}</strong>
+                  </div>
+                  <div>
+                    <span>Learning events</span>
+                    <strong>{result.autonomy?.learning_profile?.events ?? "n/a"}</strong>
+                  </div>
+                </div>
+              </div>
+            ) : null}
             <div ref={mapShellRef} className={`map-shell ${mapFullscreen ? "fullscreen" : ""}`}>
               {chartMode === "map" ? (
                 <div className="map-controls" aria-label="Map controls">
@@ -940,6 +1207,7 @@ export default function Home() {
                   <div className={`safety-strip ${result.decision_gate === "needs_clarification" ? "warn" : ""}`}>
                     <strong>Gate: {result.decision_gate === "needs_clarification" ? "Cần hỏi thêm" : "Sẵn sàng phân tích"}</strong>
                     <span>Risk: {result.safety.risk_level}</span>
+                    {result.autonomy ? <span>Case: {result.autonomy.case_type} ({Math.round(result.autonomy.confidence * 100)}%)</span> : null}
                     {result.safety.missing_fields.length ? <span>Thiếu: {result.safety.missing_fields.join(", ")}</span> : null}
                   </div>
                 ) : null}
@@ -956,6 +1224,12 @@ export default function Home() {
                   <strong>Cảnh báo:</strong> {result.warnings.join("; ")}
                   {"\n"}
                   <strong>Học hệ thống:</strong> {result.learning_note}
+                  {result.autonomy ? (
+                    <>
+                      {"\n"}
+                      <strong>Autonomous:</strong> {result.autonomy.reason}
+                    </>
+                  ) : null}
                   {result.monte_carlo?.distributions?.length ? (
                     <>
                       {"\n\n"}
@@ -1043,6 +1317,7 @@ export default function Home() {
             ) : null}
             {engineeringResult ? <EngineeringSolutionView data={engineeringResult} /> : null}
           </div>
+          )}
         </div>
       </section>
     </main>

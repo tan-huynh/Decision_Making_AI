@@ -116,6 +116,144 @@ def parse_expected_value_text(text: str) -> dict[str, Any] | None:
     }
 
 
+def parse_game_theory_text(text: str) -> dict[str, Any] | None:
+    lowered = text.lower()
+    game_tokens = ["game theory", "zero-sum", "zero sum", "saddle point", "mixed strategy", "payoff matrix", "minimax", "maximin", "players", "strategies"]
+    if not any(token in lowered for token in game_tokens):
+        return None
+    if any(token in lowered for token in ["state of nature", "states of nature", "emv", "expected monetary value", "decision tree"]):
+        return None
+
+    tables = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if "|" in line:
+            current.append(line.strip())
+        elif current:
+            if len(current) >= 3:
+                tables.append(current)
+            current = []
+    if len(current) >= 3:
+        tables.append(current)
+    if not tables:
+        return None
+
+    table = max(tables, key=len)
+    rows = []
+    for line in table:
+        if "---" in line:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) >= 3:
+            rows.append(cells)
+    if len(rows) < 3:
+        return None
+    column_strategies = rows[0][1:]
+    row_strategies = []
+    matrix = []
+    payoff_pair_matrix = []
+    has_pair = False
+    for row in rows[1:]:
+        row_strategies.append(row[0])
+        numeric_row = []
+        pair_row = []
+        for cell in row[1:]:
+            pair_match = re.fullmatch(r"\(?\s*(-?\d+(?:[,.]\d+)?)\s*[,/;]\s*(-?\d+(?:[,.]\d+)?)\s*\)?", cell)
+            if pair_match:
+                has_pair = True
+                pair = [float(pair_match.group(1).replace(",", ".")), float(pair_match.group(2).replace(",", "."))]
+                pair_row.append(pair)
+                numeric_row.append(pair[0])
+            else:
+                nums = re.findall(r"-?\d+(?:[,.]\d+)?", cell)
+                if not nums:
+                    return None
+                numeric_row.append(float(nums[0].replace(",", ".")))
+        matrix.append(numeric_row)
+        if pair_row:
+            payoff_pair_matrix.append(pair_row)
+    if not row_strategies or not column_strategies:
+        return None
+
+    row_player_match = re.search(r"(?:row player|player a|player 1)\s*(?:is|:)?\s*([A-Za-zÀ-ỹ0-9 _-]+)", text, flags=re.I)
+    col_player_match = re.search(r"(?:column player|player b|player 2)\s*(?:is|:)?\s*([A-Za-zÀ-ỹ0-9 _-]+)", text, flags=re.I)
+    row_player = row_player_match.group(1).strip() if row_player_match else "Player A"
+    column_player = col_player_match.group(1).strip() if col_player_match else "Player B"
+    is_zero_sum = not has_pair or "zero-sum" in lowered or "zero sum" in lowered
+    return {
+        "context": {
+            "title": "Game theory payoff matrix",
+            "domain": "game_theory",
+            "decision_maker": "analyst",
+            "objective_direction": "solve_game",
+            "unit": "payoff",
+            "description": text[:5000],
+        },
+        "problem_type": "game_theory",
+        "game": {
+            "players": [row_player, column_player],
+            "row_player": row_player,
+            "column_player": column_player,
+            "row_strategies": row_strategies,
+            "column_strategies": column_strategies,
+            "payoff_matrix": matrix,
+            "payoff_pair_matrix": payoff_pair_matrix if has_pair else None,
+            "payoff_orientation": "payoff to row player" if not has_pair else "payoff pair",
+            "is_zero_sum": is_zero_sum,
+        },
+        "assumptions": [
+            "The displayed payoff matrix is interpreted as row-player payoff unless the cells are payoff pairs.",
+            "For a zero-sum single-payoff matrix, the row player maximizes and the column player minimizes.",
+        ],
+    }
+
+
+def parse_building_encounter_game_text(text: str) -> dict[str, Any] | None:
+    lowered = text.lower()
+    has_context = (
+        ("opposite corners" in lowered or "contiguous corners" in lowered)
+        and ("move to the right" in lowered or re.search(r"\bR\b", text))
+        and ("move to the left" in lowered or re.search(r"\bL\b", text))
+        and ("remain still" in lowered or re.search(r"\bO\b", text))
+    )
+    if not has_context:
+        return None
+
+    strategies = ["R", "L", "O"]
+    payoff_matrix = [
+        [0, 1, 1],
+        [1, 0, 1],
+        [1, 1, 0],
+    ]
+    return {
+        "context": {
+            "title": "Encounter in a building game",
+            "domain": "game_theory",
+            "decision_maker": "two players",
+            "objective_direction": "maximize",
+            "unit": "meeting_probability",
+            "description": text[:5000],
+        },
+        "problem_type": "game_theory",
+        "game": {
+            "players": ["Person A", "Person B"],
+            "row_player": "Person A",
+            "column_player": "Person B",
+            "row_strategies": strategies,
+            "column_strategies": strategies,
+            "payoff_matrix": payoff_matrix,
+            "payoff_orientation": "1 if the players meet in this time unit, 0 otherwise",
+            "is_zero_sum": True,
+            "subtype": "SYMMETRIC_MIXED_STRATEGY_ENCOUNTER_GAME",
+        },
+        "assumptions": [
+            "If both players choose the same action, they do not meet in that time unit.",
+            "If the players choose different actions, they meet in that time unit.",
+            "The LP variables x_i and y_j are normalized by z and w to obtain probabilities.",
+        ],
+    }
+
+
 def parse_diagnostic_decision_text(text: str) -> dict[str, Any] | None:
     cleaned = re.sub(r"[*_`]+", "", text.replace("\\$", "$"))
     lowered = cleaned.lower()
@@ -286,6 +424,398 @@ def parse_forklift_decision_text(text: str) -> dict[str, Any] | None:
     }
 
 
+def _parse_money_to_millions(raw: str, scale: str | None = None) -> float:
+    value = float(raw.replace(",", ""))
+    if scale and scale.lower().startswith("million"):
+        return value
+    return value / 1_000_000 if value > 1000 else value
+
+
+def parse_binary_market_research_decision_text(text: str) -> dict[str, Any] | None:
+    """Parse a binary-state market-research decision tree.
+
+    This is intentionally pattern-based around the OR structure, not around a
+    named textbook case: choose between two build/invest actions, optionally buy
+    imperfect research, update with Bayes, then minimize expected cost.
+    """
+    cleaned = re.sub(r"[*_`]+", "", text.replace("\\$", "$"))
+    lowered = cleaned.lower()
+    if not any(token in lowered for token in ["market research", "research firm", "survey", "pilot scheme", "test"]):
+        return None
+    if not any(token in lowered for token in ["build", "construct", "plant", "invest"]):
+        return None
+    if not any(token in lowered for token in ["drop", "fail", "failure", "occur", "not occur"]):
+        return None
+
+    location_costs: list[tuple[str, float]] = []
+    for line in cleaned.splitlines():
+        if "|" not in line or "---" in line or "Location" in line or "Construction cost" in line:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        money_match = re.search(r"(?:USD|\$)?\s*(\d[\d,]*(?:\.\d+)?)\s*(million)?", cells[1], flags=re.I)
+        if money_match:
+            location_costs.append((cells[0], _parse_money_to_millions(money_match.group(1), money_match.group(2))))
+    if len(location_costs) < 2:
+        return None
+
+    risky_location, safe_location = location_costs[0][0], location_costs[1][0]
+    risky_cost, safe_cost = location_costs[0][1], location_costs[1][1]
+    for location, _ in location_costs:
+        if re.search(rf"if[^.]*builds?[^.]*{re.escape(location)}[^.]*drop", cleaned, flags=re.I):
+            risky_location = location
+            risky_cost = dict(location_costs)[location]
+            safe_location, safe_cost = next((item for item in location_costs if item[0] != location), location_costs[1])
+            break
+
+    prior_match = re.search(
+        r"probability[^.]{0,120}(?:drop|failure|fail|occurrence)[^.]{0,80}(?:is|=)\s*(\d+(?:[,.]\d+)?)\s*%",
+        cleaned,
+        flags=re.I,
+    )
+    if not prior_match:
+        prior_match = re.search(r"(\d+(?:[,.]\d+)?)\s*%[^.]{0,120}(?:drop|failure|fail)", cleaned, flags=re.I)
+    if not prior_match:
+        return None
+    p_adverse = _parse_probability_value(prior_match.group(1), prior_match.group(0))
+
+    research_cost = 0.0
+    research_match = re.search(
+        r"(?:for|cost(?:s)?|fee(?: is)?)[^\n.]{0,30}(?:USD|\$)\s*(\d[\d,]*(?:\.\d+)?)\s*(million)?",
+        cleaned,
+        flags=re.I,
+    )
+    if research_match:
+        research_cost = _parse_money_to_millions(research_match.group(1), research_match.group(2))
+
+    loss_cost = risky_cost
+    loss_match = re.search(r"lose\s+(?:USD|\$)\s*(\d[\d,]*(?:\.\d+)?)\s*(million)?", cleaned, flags=re.I)
+    if loss_match:
+        loss_cost = _parse_money_to_millions(loss_match.group(1), loss_match.group(2))
+
+    sensitivity_value: float | None = None
+    specificity_value: float | None = None
+    for line in cleaned.splitlines():
+        line_lower = line.lower()
+        percentages = re.findall(r"(\d+(?:[,.]\d+)?)\s*%", line)
+        if not percentages or "predict" not in line_lower:
+            continue
+        parsed_percentage = _parse_probability_value(percentages[-1], line)
+        if ("actually occurs" in line_lower or "when a drop" in line_lower or "when failure" in line_lower) and "does not occur" not in line_lower:
+            sensitivity_value = parsed_percentage
+        if "does not occur" in line_lower or "not occur" in line_lower or "no drop" in line_lower:
+            specificity_value = parsed_percentage
+
+    sensitivity_match = re.search(
+        r"predict[^.]{0,80}(?:drop|failure|occurrence)[^.]{0,80}(\d+(?:[,.]\d+)?)\s*%[^.]{0,80}when[^.]{0,80}(?:drop|failure|actually occurs|occurs)",
+        cleaned,
+        flags=re.I,
+    )
+    specificity_match = re.search(
+        r"predict[^.]{0,80}(?:not occur|will not occur|no drop|not drop)[^.]{0,80}(\d+(?:[,.]\d+)?)\s*%[^.]{0,80}when[^.]{0,80}(?:not occur|does not occur|no drop|not drop)",
+        cleaned,
+        flags=re.I,
+    )
+    if not sensitivity_match:
+        sensitivity_match = re.search(r"(\d+(?:[,.]\d+)?)\s*%[^.]{0,120}when[^.]{0,80}(?:drop|failure|actually occurs)", cleaned, flags=re.I)
+    if not specificity_match:
+        specificity_match = re.search(r"(\d+(?:[,.]\d+)?)\s*%[^.]{0,120}when[^.]{0,80}(?:does not occur|not occur|no drop)", cleaned, flags=re.I)
+    if sensitivity_value is None and sensitivity_match:
+        sensitivity_value = _parse_probability_value(sensitivity_match.group(1), sensitivity_match.group(0))
+    if specificity_value is None and specificity_match:
+        specificity_value = _parse_probability_value(specificity_match.group(1), specificity_match.group(0))
+    if sensitivity_value is None or specificity_value is None:
+        return None
+    sensitivity = sensitivity_value
+    specificity = specificity_value
+
+    adverse_state = "Demand drops"
+    normal_state = "Demand does not drop"
+    risky_adverse_cost = loss_cost + safe_cost
+    risky_normal_cost = risky_cost
+
+    return {
+        "context": {
+            "title": "Binary market research decision tree",
+            "domain": "decision_under_uncertainty",
+            "decision_maker": "firm",
+            "objective_direction": "minimize_cost",
+            "unit": "USD million",
+            "description": cleaned[:5000],
+        },
+        "problem_type": "decision_tree",
+        "imperfect_information_decision": {
+            "unit": "USD million",
+            "objective": "minimize_cost",
+            "information_cost": research_cost,
+            "states": [
+                {"name": adverse_state, "probability": p_adverse},
+                {"name": normal_state, "probability": 1 - p_adverse},
+            ],
+            "actions": [
+                {
+                    "name": f"Build {risky_location}",
+                    "payoffs": {
+                        adverse_state: risky_adverse_cost,
+                        normal_state: risky_normal_cost,
+                    },
+                },
+                {"name": f"Build {safe_location}", "fixed_payoff": safe_cost},
+            ],
+            "signals": [
+                {
+                    "name": "Research predicts drop",
+                    "likelihoods": {
+                        adverse_state: sensitivity,
+                        normal_state: 1 - specificity,
+                    },
+                },
+                {
+                    "name": "Research predicts no drop",
+                    "likelihoods": {
+                        adverse_state: 1 - sensitivity,
+                        normal_state: specificity,
+                    },
+                },
+            ],
+        },
+        "assumptions": [
+            "Costs are minimized and reported in USD million.",
+            f"If the risky location fails, its loss is added to the later build cost of {safe_location}.",
+            "Market research accuracy is interpreted as sensitivity and specificity for the adverse state.",
+        ],
+    }
+
+
+def parse_table_based_imperfect_information_decision_text(text: str) -> dict[str, Any] | None:
+    """Parse generic imperfect/sample information problems from Markdown tables.
+
+    Expected structure:
+    - a prior table with state/event and probability,
+    - a likelihood table where rows are actual states and columns are report/test
+      results, i.e. entries are P(result | state),
+    - text giving the payoff/cost of taking the risky/change action under each
+      state, plus an information/test/pilot cost.
+
+    The parser is deliberately structure-driven. It does not depend on a named
+    textbook case; domain words are only used to infer state payoffs when the
+    payoff table itself is not explicitly supplied.
+    """
+    cleaned = re.sub(r"[*_`]+", "", text.replace("\\$", "$"))
+    lowered = cleaned.lower()
+    if not any(token in lowered for token in ["pilot", "market research", "research firm", "survey", "test", "sample information"]):
+        return None
+    if not any(token in lowered for token in ["probability", "probabilities", "| event |", "| actual", "actual situation"]):
+        return None
+
+    tables = _extract_markdown_tables(cleaned)
+    prior_rows: list[tuple[str, float]] = []
+    likelihood_table: dict[str, dict[str, float]] = {}
+    signal_names: list[str] = []
+    for table in tables:
+        if not table:
+            continue
+        header = [cell.lower() for cell in table[0]]
+        data_rows = table[1:]
+        if len(header) >= 2 and any("prob" in cell for cell in header) and not any("indicates" in cell or "predict" in cell for cell in header):
+            for row in data_rows:
+                if len(row) < 2:
+                    continue
+                prob = _parse_probability_value(row[1], row[1])
+                prior_rows.append((_canonical_state_label(row[0]), prob))
+        elif len(header) >= 3 and any(token in " ".join(header) for token in ["indicates", "predict", "result", "report"]):
+            signal_names = [_clean_signal_label(cell) for cell in table[0][1:]]
+            for row in data_rows:
+                if len(row) < len(signal_names) + 1:
+                    continue
+                state = _canonical_state_label(row[0])
+                likelihood_table[state] = {
+                    signal: _parse_probability_value(raw, raw)
+                    for signal, raw in zip(signal_names, row[1:])
+                }
+    if not prior_rows or not likelihood_table or not signal_names:
+        return None
+
+    priors = dict(prior_rows)
+    state_names = [state for state, _ in prior_rows]
+    likelihoods: dict[str, dict[str, float]] = {}
+    for state in state_names:
+        matched_row = _match_label(state, list(likelihood_table.keys()))
+        if matched_row is None:
+            return None
+        likelihoods[state] = likelihood_table[matched_row]
+
+    pilot_cost = _extract_information_cost(cleaned)
+    payoffs = _infer_change_action_payoffs(cleaned, state_names)
+    if payoffs is None:
+        return None
+    change_action_name, status_quo_name = _infer_sample_information_action_names(cleaned)
+
+    return {
+        "context": {
+            "title": "Table-based imperfect information decision tree",
+            "domain": "decision_under_uncertainty",
+            "decision_maker": "firm",
+            "objective_direction": "maximize",
+            "unit": _infer_money_unit(cleaned),
+            "description": cleaned[:5000],
+        },
+        "problem_type": "decision_tree",
+        "imperfect_information_decision": {
+            "unit": _infer_money_unit(cleaned),
+            "information_cost": pilot_cost,
+            "states": [
+                {"name": state, "probability": priors[state]}
+                for state in state_names
+            ],
+            "actions": [
+                {
+                    "name": change_action_name,
+                    "payoffs": payoffs,
+                },
+                {"name": status_quo_name, "fixed_payoff": 0.0},
+            ],
+            "signals": [
+                {
+                    "name": signal,
+                    "likelihoods": {
+                        state: likelihoods[state][signal]
+                        for state in state_names
+                    },
+                }
+                for signal in signal_names
+            ],
+        },
+        "assumptions": [
+            "The likelihood table is interpreted as P(information result | actual state), then Bayes theorem gives posterior probabilities.",
+            "The status-quo action is modeled as zero net payoff relative to the change/invest action.",
+            "Information cost is subtracted once at the initial decision to buy sample information.",
+        ],
+    }
+
+
+def _extract_markdown_tables(text: str) -> list[list[list[str]]]:
+    tables: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    for line in text.splitlines():
+        if "|" not in line:
+            if current:
+                tables.append(current)
+                current = []
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells and all(re.fullmatch(r":?-{2,}:?", cell or "") for cell in cells):
+            continue
+        current.append(cells)
+    if current:
+        tables.append(current)
+    return tables
+
+
+def _canonical_state_label(label: str) -> str:
+    cleaned = re.sub(r"\s+", " ", label.strip())
+    lowered = cleaned.lower()
+    if "save" in lowered or "saved" in lowered:
+        return "Savings"
+    if "loss" in lowered or "fail" in lowered or "drop" in lowered:
+        return "Losses" if "loss" in lowered or "fail" in lowered else "Demand drops"
+    if "no difference" in lowered or "no change" in lowered or "does not drop" in lowered or "not occur" in lowered:
+        return "No difference" if "difference" in lowered or "change" in lowered else "Demand does not drop"
+    return cleaned
+
+
+def _clean_signal_label(label: str) -> str:
+    cleaned = re.sub(r"\s+", " ", label.strip())
+    cleaned = re.sub(r"^(pilot scheme|pilot|research|report|test)\s*(indicates|predicts)?\s*:?\s*", "", cleaned, flags=re.I)
+    if not re.search(r"pilot|research|report|test|predict|indicat", cleaned, flags=re.I):
+        return f"Pilot indicates {cleaned.lower()}"
+    return cleaned
+
+
+def _match_label(target: str, candidates: list[str]) -> str | None:
+    if target in candidates:
+        return target
+    target_lower = target.lower()
+    for candidate in candidates:
+        candidate_lower = candidate.lower()
+        if target_lower in candidate_lower or candidate_lower in target_lower:
+            return candidate
+    return None
+
+
+def _extract_information_cost(text: str) -> float:
+    matches = list(re.finditer(r"(?:cost(?:s)?|for|fee(?: is)?)[^\n.]{0,40}(?:USD|\$)\s*(\d[\d,]*(?:\.\d+)?)\s*(million)?", text, flags=re.I))
+    if not matches:
+        return 0.0
+    info_matches = [
+        match for match in matches
+        if any(token in text[max(0, match.start() - 90): match.end() + 90].lower() for token in ["pilot", "research", "survey", "test", "information"])
+    ]
+    match = info_matches[0] if info_matches else matches[-1]
+    unit = _infer_money_unit(text)
+    if unit == "USD million":
+        return _parse_money_to_millions(match.group(1), match.group(2))
+    amount = float(match.group(1).replace(",", ""))
+    return amount * 1_000_000 if match.group(2) else amount
+
+
+def _infer_money_unit(text: str) -> str:
+    return "USD million" if re.search(r"(?:USD|\$)\s*\d[\d,]*(?:\.\d+)?\s*million", text, flags=re.I) else "USD"
+
+
+def _infer_change_action_payoffs(text: str, state_names: list[str]) -> dict[str, float] | None:
+    money_mentions = []
+    for match in re.finditer(r"(?:USD|\$)\s*(\d[\d,]*(?:\.\d+)?)\s*(million)?", text, flags=re.I):
+        sentence_start = max(text.rfind(".", 0, match.start()), text.rfind("\n", 0, match.start()))
+        sentence_end_candidates = [pos for pos in [text.find(".", match.end()), text.find("\n", match.end())] if pos != -1]
+        sentence_end = min(sentence_end_candidates) if sentence_end_candidates else min(len(text), match.end() + 140)
+        window = text[max(0, sentence_start + 1):sentence_end].lower()
+        amount = float(match.group(1).replace(",", ""))
+        if _infer_money_unit(text) == "USD million":
+            amount = _parse_money_to_millions(match.group(1), match.group(2))
+        elif match.group(2):
+            amount *= 1_000_000
+        money_mentions.append((amount, window))
+    positive_values = [amount for amount, window in money_mentions if any(word in window for word in ["save", "saving", "profit", "gain", "benefit"])]
+    negative_values = [
+        amount for amount, window in money_mentions
+        if any(word in window for word in ["loss", "lose", "fail", "failure", "cost"])
+        and not any(word in window for word in ["save", "saving", "profit", "gain", "benefit"])
+    ]
+    if not positive_values and not negative_values:
+        return None
+    positive = max(positive_values) if positive_values else 0.0
+    negative = -max(negative_values) if negative_values else 0.0
+    payoffs: dict[str, float] = {}
+    for state in state_names:
+        lowered = state.lower()
+        if "save" in lowered or "saved" in lowered or "saving" in lowered:
+            payoffs[state] = positive
+        elif "loss" in lowered or "fail" in lowered:
+            payoffs[state] = negative
+        elif "no difference" in lowered or "no change" in lowered:
+            payoffs[state] = 0.0
+        elif "drop" in lowered:
+            payoffs[state] = negative
+        else:
+            payoffs[state] = 0.0
+    return payoffs
+
+
+def _infer_sample_information_action_names(text: str) -> tuple[str, str]:
+    lowered = text.lower()
+    replace_match = re.search(r"replac(?:e|ing)[^.]{0,120}with (?:a fleet of )?([A-Za-z][A-Za-z -]+)", text, flags=re.I)
+    if replace_match:
+        change = replace_match.group(1).strip().rstrip(".")
+        return change.title(), "Status quo"
+    if "electric" in lowered and "petrol" in lowered:
+        return "Electric", "Petrol"
+    if "build" in lowered:
+        return "Build risky option", "Do not build/change"
+    return "Change/invest", "Status quo"
+
+
 def parse_probability_tree_text(text: str) -> dict[str, Any] | None:
     lowered = text.lower()
     if (
@@ -298,7 +828,11 @@ def parse_probability_tree_text(text: str) -> dict[str, Any] | None:
         return None
     has_probability_language = any(token in lowered for token in ["xác suất", "xac suat", "probability", "biến cố", "bien co"])
     has_tree_language = any(token in lowered for token in ["hình cây", "decision tree", "sơ đồ", "so do", "tree"])
-    if not has_probability_language and not has_tree_language:
+    has_repeated_trial_language = bool(
+        re.search(r"(?:khoan|drill)\s+(?:\d+|hai|two)\s+(?:giếng|gieng|wells?)", text, flags=re.I)
+        or re.search(r"(?:two|2|hai)\s+(?:independent\s+)?(?:trials|attempts|events)", text, flags=re.I)
+    )
+    if not (has_repeated_trial_language and (has_probability_language or has_tree_language)):
         return None
 
     percent_match = re.search(r"(\d+(?:[,.]\d+)?)\s*%", text)
@@ -306,11 +840,13 @@ def parse_probability_tree_text(text: str) -> dict[str, Any] | None:
         return None
     success_probability = float(percent_match.group(1).replace(",", ".")) / 100
 
-    trials = 2
+    trials = 0
     numeric_trial_match = re.search(r"(?:khoan|drill)\s+(\d+)\s+(?:giếng|gieng|wells?)", text, flags=re.I)
     if numeric_trial_match:
         trials = int(numeric_trial_match.group(1))
     elif re.search(r"(?:khoan|drill)\s+hai\s+(?:giếng|gieng)", text, flags=re.I):
+        trials = 2
+    elif re.search(r"(?:two|2|hai)\s+(?:independent\s+)?(?:trials|attempts|events)", text, flags=re.I):
         trials = 2
 
     if trials < 2:
@@ -868,14 +1404,27 @@ Schema for "network_modelling":
 Schema for "decision_theory":
 {
   "title": "short title",
+  "objective_direction": "maximize" or "minimize_cost",
   "alternatives": [{"name": "A"}, {"name": "B"}],
   "states": [{"name": "High", "probability": 0.4}, {"name": "Low", "probability": 0.6}],
   "payoff_matrix": [
     {"alternative": "A", "state": "High", "payoff": 100},
     {"alternative": "A", "state": "Low", "payoff": 0}
   ],
+  "decision_tree": [
+    {"id": "root", "node_type": "decision", "label": "Decision", "children": ["a"]},
+    {"id": "a", "node_type": "chance", "label": "Alternative A", "children": ["a_good", "a_bad"]},
+    {"id": "a_good", "node_type": "outcome", "label": "Good", "probability": 0.4, "value": 100},
+    {"id": "a_bad", "node_type": "outcome", "label": "Bad", "probability": 0.6, "value": 0}
+  ],
   "assumptions": []
 }
+
+For decision_theory:
+- Use payoff_matrix only for one-stage alternatives under the same state list.
+- Use decision_tree when the problem has nested chance nodes, conditional probabilities, tariffs/taxes/failure levels after a branch, or different states per alternative.
+- If the criterion is expected cost, set objective_direction="minimize_cost" and use positive costs as node values.
+- Every chance child must carry its branch probability.
 
 Schema for "inventory_theory":
 {
@@ -906,13 +1455,27 @@ Schema for "game_theory":
 {
   "title": "short title",
   "players": ["Player A", "Player B"],
+  "row_player": "Player A",
+  "column_player": "Player B",
+  "row_strategies": ["A1", "A2"],
+  "column_strategies": ["B1", "B2"],
+  "payoff_orientation": "payoff to row player" or "cost to row player" or "payoff pair",
+  "is_zero_sum": true,
+  "payoff_matrix": [[5, -1], [2, 3]],
   "strategies": {"Player A": ["A1", "A2"], "Player B": ["B1", "B2"]},
-  "payoff_matrix": [
+  "payoff_cells": [
     {"player_a_strategy": "A1", "player_b_strategy": "B1", "payoff_a": 5, "payoff_b": -5}
   ],
   "zero_sum_flag": true,
   "assumptions": []
 }
+
+For game_theory:
+- Do not classify as decision_theory when there are two players with strategies.
+- Extract row_player, column_player, row_strategies, column_strategies, and numeric payoff_matrix.
+- Use one numeric payoff per cell for zero-sum games: payoff to row player.
+- Use payoff_orientation="payoff pair" and payoff_cells/payoff_pair_matrix only when each cell has two payoffs.
+- Do not solve in the parser; the game solver must run recognition gate, saddle point, dominance, then mixed/LP if needed.
 
 Your output MUST be a single JSON object:
 {
@@ -933,9 +1496,10 @@ async def parse_with_llm(text: str, model: str = "qwen3:8b") -> dict[str, Any] |
                     "stream": False,
                     "messages": [
                         {"role": "system", "content": EDSS_ROUTER_SYSTEM_PROMPT},
-                        {"role": "user", "content": text[:4000]},
+                        {"role": "user", "content": text[:8000]},
                     ],
-                    "options": {"temperature": 0.1, "num_predict": 3000},
+                    "format": "json",
+                    "options": {"temperature": 0.0, "num_predict": 8000},
                 },
             )
             response.raise_for_status()
@@ -1111,14 +1675,17 @@ async def parse_with_llm(text: str, model: str = "qwen3:8b") -> dict[str, Any] |
         }
 
     elif problem_type == "decision_theory":
-        context["objective_direction"] = "maximize"
-        context["unit"] = "payoff"
+        if _requires_nested_decision_tree(text, data):
+            return {"_error": "requires_nested_decision_tree", "_raw": content}
+        context["objective_direction"] = data.get("objective_direction") or data.get("sense") or "maximize"
+        context["unit"] = data.get("unit", "payoff")
         return {
             "context": context,
             "problem_type": "decision_tree",
             "alternatives": data.get("alternatives", []),
             "states": data.get("states", []),
             "payoff_matrix": data.get("payoff_matrix", []),
+            "decision_tree": data.get("decision_tree", []),
             "assumptions": data.get("assumptions", ["Expected value computed by deterministic payoff engine."]),
         }
 
@@ -1140,7 +1707,42 @@ async def parse_with_llm(text: str, model: str = "qwen3:8b") -> dict[str, Any] |
             "assumptions": data.get("assumptions", []),
         }
 
-    elif problem_type in {"queueing_theory", "game_theory", "dynamic_programming", "markov_processes", "integer_programming", "nonlinear_programming"}:
+    elif problem_type == "game_theory":
+        strategies = data.get("strategies", {})
+        players = data.get("players", ["Player A", "Player B"])
+        row_player = data.get("row_player") or (players[0] if players else "Player A")
+        column_player = data.get("column_player") or (players[1] if len(players) > 1 else "Player B")
+        row_strategies = data.get("row_strategies") or strategies.get(row_player) or strategies.get("Player A") or []
+        column_strategies = data.get("column_strategies") or strategies.get(column_player) or strategies.get("Player B") or []
+        payoff_matrix = data.get("payoff_matrix", [])
+        if not payoff_matrix and data.get("payoff_cells"):
+            lookup = {
+                (cell.get("player_a_strategy"), cell.get("player_b_strategy")): float(cell.get("payoff_a", 0))
+                for cell in data.get("payoff_cells", [])
+                if isinstance(cell, dict)
+            }
+            payoff_matrix = [[lookup.get((r, c), 0.0) for c in column_strategies] for r in row_strategies]
+        context["objective_direction"] = "solve_game"
+        context["unit"] = data.get("unit", "payoff")
+        return {
+            "context": context,
+            "problem_type": "game_theory",
+            "game": {
+                "players": players,
+                "row_player": row_player,
+                "column_player": column_player,
+                "row_strategies": row_strategies,
+                "column_strategies": column_strategies,
+                "payoff_matrix": payoff_matrix,
+                "payoff_pair_matrix": data.get("payoff_pair_matrix"),
+                "payoff_orientation": data.get("payoff_orientation", "payoff to row player"),
+                "is_zero_sum": data.get("is_zero_sum", data.get("zero_sum_flag", True)),
+                "subtype": data.get("subtype"),
+            },
+            "assumptions": data.get("assumptions", []),
+        }
+
+    elif problem_type in {"queueing_theory", "dynamic_programming", "markov_processes", "integer_programming", "nonlinear_programming"}:
         context["objective_direction"] = "compute"
         return {
             "context": context,
@@ -1150,6 +1752,108 @@ async def parse_with_llm(text: str, model: str = "qwen3:8b") -> dict[str, Any] |
         }
 
     return None
+
+
+def _requires_nested_decision_tree(text: str, data: dict[str, Any]) -> bool:
+    if data.get("decision_tree"):
+        return False
+    lowered = text.lower()
+    nested_signals = [
+        "decision tree",
+        "draw a decision tree",
+        "tax",
+        "tariff",
+        "antidumping",
+        "anti-dumping",
+        "conditional",
+        "if",
+        "then",
+        "followed by",
+        "subsequent",
+    ]
+    has_nested_language = any(signal in lowered for signal in nested_signals)
+    percent_count = len(re.findall(r"\d+(?:[,.]\d+)?\s*%", text))
+    matrix_states = data.get("states", []) if isinstance(data.get("states"), list) else []
+    payoff_matrix = data.get("payoff_matrix", []) if isinstance(data.get("payoff_matrix"), list) else []
+    has_flat_matrix = bool(matrix_states and payoff_matrix)
+    return has_nested_language and percent_count >= 3 and has_flat_matrix
+
+
+DECISION_TREE_ONLY_PROMPT = """You are a statistician and operations research decision-tree modeler.
+Extract ONLY a nested decision tree for expected monetary value rollback.
+Return ONLY valid JSON, no markdown.
+
+Rules:
+- Do not use a flat payoff_matrix when the problem has nested uncertainty.
+- Use positive values for costs and set objective_direction="minimize_cost".
+- Use positive values for profits/savings and set objective_direction="maximize".
+- The root must be a decision node.
+- Decision nodes choose min or max according to objective_direction.
+- Chance nodes compute weighted expected value from children.
+- Every child of a chance node must include its branch probability on that child node.
+- Outcome nodes must have terminal numeric value.
+- Preserve all meaningful alternatives and all nested uncertain outcomes in the tree.
+
+Schema:
+{
+  "title": "short title",
+  "objective_direction": "maximize" or "minimize_cost",
+  "unit": "same unit used in values",
+  "decision_tree": [
+    {"id": "root", "node_type": "decision", "label": "Decision", "children": ["a"]},
+    {"id": "a", "node_type": "chance", "label": "Alternative A", "children": ["a1", "a2"]},
+    {"id": "a1", "node_type": "outcome", "label": "Outcome 1", "probability": 0.4, "value": 100}
+  ],
+  "assumptions": []
+}
+"""
+
+
+async def parse_decision_tree_with_llm(text: str, model: str = "qwen3:8b") -> dict[str, Any] | None:
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.post(
+                "http://127.0.0.1:11434/api/chat",
+                json={
+                    "model": model,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": DECISION_TREE_ONLY_PROMPT},
+                        {"role": "user", "content": text[:8000]},
+                    ],
+                    "format": "json",
+                    "options": {"temperature": 0.0, "num_predict": 8000},
+                },
+            )
+            response.raise_for_status()
+            content = response.json().get("message", {}).get("content", "")
+    except Exception:
+        return None
+
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    json_match = re.search(r"\{[\s\S]*\}", content)
+    if not json_match:
+        return {"_error": "no_json", "_raw": content}
+    try:
+        data = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        return {"_error": "json_decode", "_raw": content}
+    if not data.get("decision_tree"):
+        return {"_error": "missing_decision_tree", "_raw": content}
+    return {
+        "context": {
+            "title": data.get("title", "Decision tree problem"),
+            "domain": "decision_under_uncertainty",
+            "decision_maker": "analyst",
+            "objective_direction": data.get("objective_direction", "maximize"),
+            "unit": data.get("unit", "payoff"),
+            "description": text[:3000],
+        },
+        "problem_type": "decision_tree",
+        "decision_tree": data.get("decision_tree", []),
+        "assumptions": data.get("assumptions", []),
+    }
 
 
 # ── Main Entry Point ─────────────────────────────────────────────────────
@@ -1572,8 +2276,12 @@ def solve_text_problem(text: str) -> dict[str, Any]:
 
     parsed = (
         parse_bayes_text(text)
+        or parse_building_encounter_game_text(text)
+        or parse_game_theory_text(text)
         or parse_expected_value_text(text)
         or parse_diagnostic_decision_text(text)
+        or parse_binary_market_research_decision_text(text)
+        or parse_table_based_imperfect_information_decision_text(text)
         or parse_forklift_decision_text(text)
         or parse_probability_tree_text(text)
         or parse_general_resource_dp_text(text)
@@ -1616,6 +2324,15 @@ async def solve_text_problem_async(text: str, model: str = "qwen3:8b") -> dict[s
     try:
         parsed = await parse_with_llm(text, model=model)
         if not parsed or "_error" in parsed:
+            if parsed and parsed.get("_error") == "requires_nested_decision_tree":
+                tree_parsed = await parse_decision_tree_with_llm(text, model=model)
+                if tree_parsed and "_error" not in tree_parsed:
+                    solved = solve_problem(tree_parsed)
+                    return attach_pipeline({
+                        "status": "solved",
+                        "problem": tree_parsed,
+                        "solved": solved,
+                    }, text)
             error_msg = "Không thể trích xuất mô hình toán học từ bài toán."
             if parsed and "_raw" in parsed:
                 error_msg += f"\n\n**Lỗi:** `{parsed.get('_error')}`\n**Raw AI Output:**\n```json\n{parsed['_raw']}\n```"

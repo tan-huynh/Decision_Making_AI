@@ -11,14 +11,24 @@ from typing import Any
 from .assignment import solve_assignment
 from .audit import create_audit_trail, log_step
 from .classifier import classify_problem, missing_data_questions
-from .dynamic_programming import solve_finite_horizon_dp, solve_resource_allocation_dp
+from .decision_theory import recognize_decision_theory, solve_decision_theory_problem
+from .dp_solver import recognize_dynamic_programming, solve_dynamic_programming_problem
+from .inventory_solver import recognize_inventory_theory, solve_inventory_theory_problem
+from .integer_solver import recognize_integer_programming, solve_integer_programming_problem
 from .linear_programming import solve_lp
+from .linear_solver import recognize_linear_programming, solve_linear_programming_problem
+from .markov_solver import recognize_markov_processes, solve_markov_processes_problem
+from .mermaid_visualization import attach_mermaid_if_needed
+from .game_theory import solve_game_theory
 from .model_validator import validate_model
 from .multiobjective import pareto_frontier, weighted_score
 from .network import solve_shortest_path, solve_transportation, solve_max_flow, solve_min_cost_flow
+from .network_solver import NETWORK_TYPES, recognize_network_modelling, solve_network_modelling_problem
+from .nonlinear_solver import recognize_nonlinear_programming, solve_nonlinear_programming_problem
+from .queueing_solver import recognize_queueing_theory, solve_queueing_problem
 from .risk import risk_from_simulation, value_at_risk
 from .sensitivity_engine import sensitivity_analysis
-from .uncertainty import expected_payoff, rollback_decision_tree, simulate_payoffs, solve_bayes_problem, solve_binary_event_tree, solve_diagnostic_decision_tree, solve_forklift_decision_tree, solve_independent_probability, value_of_information
+from .uncertainty import expected_payoff, rollback_decision_tree, simulate_payoffs, solve_bayes_problem, solve_binary_event_tree, solve_diagnostic_decision_tree, solve_forklift_decision_tree, solve_imperfect_information_decision_tree, solve_independent_probability, value_of_information
 from .voi_engine import compute_voi_from_problem
 from .or_pipeline import classify_with_taxonomy, recognition_gate
 
@@ -67,6 +77,8 @@ def build_mathematical_model(problem: dict[str, Any]) -> dict[str, Any]:
             model["formulation"] = "Bayes: P(H|E)=P(E|H)P(H)/[P(E|H)P(H)+P(E|¬H)P(¬H)]."
         elif problem.get("diagnostic_decision"):
             model["formulation"] = "Diagnostic decision tree: prior → imperfect test → posterior probabilities → optional follow-up information → rollback expected payoff."
+        elif problem.get("imperfect_information_decision"):
+            model["formulation"] = "Imperfect sample information: prior states → pilot signal likelihoods → Bayes posteriors → choose best action for each signal → rollback EMV and EVSI."
         elif problem.get("forklift_decision"):
             model["formulation"] = "Forklift decision tree: choose new/used/test; use Bayes posteriors for test results; rollback minimum expected cost and information value."
         elif problem.get("independent_probabilities"):
@@ -79,11 +91,46 @@ def build_mathematical_model(problem: dict[str, Any]) -> dict[str, Any]:
             )
     elif kind == "dynamic_programming":
         model["formulation"] = (
-            "F_k(s) = max_x { reward_k(s,x) + F_{k+1}(T(s,x)) }\n"
-            "Bellman backward induction over stages and states."
+            "Recognition gate: identify stages, states, decisions, transition, reward/cost, boundary.\n"
+            "Max: f_n(s)=max_x { r_n(s,x)+f_{n+1}(T_n(s,x)) }\n"
+            "Min: f_n(s)=min_x { c_n(s,x)+f_{n+1}(T_n(s,x)) }\n"
+            "Solve by Bellman recursion, DP tables, traceback, and verification."
+        )
+    elif kind == "integer_programming":
+        model["formulation"] = (
+            "Integer Programming recognition gate → identify integer/binary variables, objective, constraints, "
+            "and logical links → formulate MILP with integrality restrictions → solve by branch-and-bound/MILP "
+            "and verify integer feasibility. Do not round LP relaxation as an optimal IP solution."
         )
     elif kind == "multi_objective":
         model["formulation"] = "Score(a)=Σ_k w_k × f_k(a); Pareto frontier for non-dominated."
+    elif kind == "game_theory":
+        model["formulation"] = (
+            "Game Theory recognition gate → payoff matrix → maximin/minimax saddle-point check → "
+            "dominance reduction → mixed strategy by 2x2 algebra, graph method, or LP."
+        )
+    elif kind == "queueing_theory":
+        model["formulation"] = (
+            "Queueing recognition gate → normalize λ and μ → identify M/M/1, M/M/s, finite capacity, "
+            "finite source, or network → check ρ < 1 → compute P0, Lq, L, Wq, W and cost if required."
+        )
+    elif kind in ("inventory", "inventory_theory"):
+        model["formulation"] = (
+            "Inventory recognition gate → normalize annual demand D, ordering cost K, holding cost h, "
+            "unit cost c, lead time, discount/backorder flags → choose EOQ, reorder point, quantity discount, "
+            "or planned shortage formula → verify costs and feasibility."
+        )
+    elif kind == "nonlinear_programming":
+        model["formulation"] = (
+            "NLP recognition gate → identify continuous variables, nonlinear objective/constraints, domain, "
+            "convexity, and method → formulate Lagrangian/KKT or solve numerically with feasibility/globality checks."
+        )
+    elif kind == "markov_processes":
+        model["formulation"] = (
+            "Markov recognition gate → identify states, one-step transition matrix P, time step, initial distribution "
+            "and requested output → validate row-stochastic probabilities → compute P^n, stationary distribution, "
+            "absorbing metrics, first passage time, or long-run mean cost."
+        )
     else:
         model["formulation"] = "Model builder needs structured variables, constraints, graph, stages, or payoff matrix."
 
@@ -110,6 +157,142 @@ def solve_problem(problem: dict[str, Any]) -> dict[str, Any]:
     kind = problem.get("problem_type") or classification["primary_type"]
     log_step(trail, "classification", kind)
 
+    if kind == "dynamic_programming":
+        dp_recognition = recognize_dynamic_programming(problem)
+        if not dp_recognition["can_solve"]:
+            dp_result = solve_dynamic_programming_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": "needs_clarification",
+                "missing_data": dp_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": dp_recognition["missing_information"], "warnings": [], "info": []},
+                "result": dp_result,
+                "recognition_gate": dp_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu Dynamic Programming nhưng chưa đủ stage/state/decision/transition/reward để giải.",
+                "audit_steps": len(trail["steps"]),
+            }
+    if kind == "linear_programming":
+        lp_recognition = recognize_linear_programming(problem)
+        if not lp_recognition["can_solve"]:
+            lp_result = solve_linear_programming_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": lp_result.get("status", "needs_clarification"),
+                "missing_data": lp_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": lp_recognition["missing_information"], "warnings": [], "info": []},
+                "result": lp_result,
+                "recognition_gate": lp_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu LP nhưng chưa đủ điều kiện LP: cần objective/constraints tuyến tính, biến continuous và bounds rõ ràng.",
+                "audit_steps": len(trail["steps"]),
+            }
+    if kind == "decision_tree":
+        dt_recognition = recognize_decision_theory(problem)
+        if not dt_recognition["can_solve"]:
+            dt_result = solve_decision_theory_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": "needs_clarification",
+                "missing_data": dt_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": dt_recognition["missing_information"], "warnings": [], "info": []},
+                "result": dt_result,
+                "recognition_gate": dt_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu Decision Theory nhưng chưa đủ alternatives/states/probabilities/payoffs để kết luận.",
+                "audit_steps": len(trail["steps"]),
+            }
+    if kind == "queueing_theory":
+        qt_recognition = recognize_queueing_theory(problem)
+        if not qt_recognition["can_solve"]:
+            qt_result = solve_queueing_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": "needs_clarification",
+                "missing_data": qt_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": qt_recognition["missing_information"], "warnings": [], "info": []},
+                "result": qt_result,
+                "recognition_gate": qt_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu Queueing Theory nhưng chưa đủ λ/μ/server/population/objective để giải.",
+                "audit_steps": len(trail["steps"]),
+            }
+    if kind in ("inventory", "inventory_theory"):
+        inv_recognition = recognize_inventory_theory(problem)
+        if not inv_recognition["can_solve"]:
+            inv_result = solve_inventory_theory_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": "needs_clarification",
+                "missing_data": inv_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": inv_recognition["missing_information"], "warnings": [], "info": []},
+                "result": inv_result,
+                "recognition_gate": inv_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu Inventory Theory nhưng chưa đủ D/K/h/c/discount/backorder data để giải.",
+                "audit_steps": len(trail["steps"]),
+            }
+    if kind in NETWORK_TYPES:
+        net_recognition = recognize_network_modelling(problem)
+        if not net_recognition["can_solve"]:
+            net_result = solve_network_modelling_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": "needs_clarification",
+                "missing_data": net_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": net_recognition["missing_information"], "warnings": [], "info": []},
+                "result": net_result,
+                "recognition_gate": net_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu Network Modelling nhưng chưa đủ nodes/arcs/weights/source/sink/capacity để giải.",
+                "audit_steps": len(trail["steps"]),
+            }
+    if kind == "nonlinear_programming":
+        nlp_recognition = recognize_nonlinear_programming(problem)
+        if not nlp_recognition["can_solve"]:
+            nlp_result = solve_nonlinear_programming_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": "needs_clarification",
+                "missing_data": nlp_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": nlp_recognition["missing_information"], "warnings": [], "info": []},
+                "result": nlp_result,
+                "recognition_gate": nlp_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu Nonlinear Programming nhưng chưa đủ variables/objective/constraints/domain để giải.",
+                "audit_steps": len(trail["steps"]),
+            }
+    if kind == "integer_programming":
+        ip_recognition = recognize_integer_programming(problem)
+        if not ip_recognition["can_solve"]:
+            ip_result = solve_integer_programming_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": "needs_clarification",
+                "missing_data": ip_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": ip_recognition["missing_information"], "warnings": [], "info": []},
+                "result": ip_result,
+                "recognition_gate": ip_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu Integer Programming nhưng chưa đủ variables/objective/constraints/integrality để giải.",
+                "audit_steps": len(trail["steps"]),
+            }
+    if kind == "markov_processes":
+        mc_recognition = recognize_markov_processes(problem)
+        if not mc_recognition["can_solve"]:
+            mc_result = solve_markov_processes_problem(problem)
+            return {
+                "problem_type": kind,
+                "status": "needs_clarification",
+                "missing_data": mc_recognition["missing_information"],
+                "model": build_mathematical_model(problem),
+                "validation": {"is_valid": False, "errors": mc_recognition["missing_information"], "warnings": [], "info": []},
+                "result": mc_result,
+                "recognition_gate": mc_recognition,
+                "recommendation_explanation": "Bài toán có dấu hiệu Markov Processes nhưng chưa đủ states/P/time step/requested output để giải.",
+                "audit_steps": len(trail["steps"]),
+            }
+
     gate = recognition_gate(classification, problem)
     if gate["decision_to_solve"] == "ask_clarification":
         return {
@@ -128,50 +311,23 @@ def solve_problem(problem: dict[str, Any]) -> dict[str, Any]:
     # 3. Solve
     result: dict[str, Any]
     if kind == "linear_programming":
-        result = solve_lp(problem)
+        result = solve_linear_programming_problem(problem)
     elif kind == "assignment":
         result = solve_assignment(problem.get("assignment_costs", []), maximize=False)
     elif kind == "shortest_path":
-        result = solve_shortest_path(problem.get("graph", {}))
+        result = solve_network_modelling_problem(problem)
     elif kind == "transportation":
         result = solve_transportation(problem)
     elif kind == "max_flow":
-        result = solve_max_flow(problem.get("graph", {}))
+        result = solve_network_modelling_problem(problem)
     elif kind in ("min_cost_flow", "transshipment", "network_flow"):
-        result = solve_min_cost_flow(problem.get("graph", {}))
+        result = solve_network_modelling_problem(problem)
     elif kind == "inventory":
-        from .inventory import solve_inventory_problem
-        result = solve_inventory_problem(problem)
+        result = solve_inventory_theory_problem(problem)
     elif kind == "dynamic_programming":
-        if problem.get("resource_allocation"):
-            spec = problem["resource_allocation"]
-            result = solve_resource_allocation_dp(
-                int(spec["total_resource"]),
-                spec["stage_returns"],
-                spec.get("resource_name", "resource"),
-                spec.get("sense", problem.get("context", {}).get("objective_direction", "maximize")),
-            )
-        else:
-            result = solve_finite_horizon_dp(problem)
+        result = solve_dynamic_programming_problem(problem)
     elif kind == "decision_tree":
-        if problem.get("probability_tree"):
-            result = solve_binary_event_tree(problem)
-        elif problem.get("bayes"):
-            result = solve_bayes_problem(problem)
-        elif problem.get("diagnostic_decision"):
-            result = solve_diagnostic_decision_tree(problem)
-        elif problem.get("forklift_decision"):
-            result = solve_forklift_decision_tree(problem)
-        elif problem.get("independent_probabilities"):
-            result = solve_independent_probability(problem)
-        else:
-            result = rollback_decision_tree(problem) if problem.get("decision_tree") else expected_payoff(problem)
-        # Add VOI if payoff matrix available
-        if problem.get("payoff_matrix"):
-            try:
-                result["voi"] = compute_voi_from_problem(problem)
-            except Exception:
-                result["voi"] = value_of_information(problem)
+        result = solve_decision_theory_problem(problem)
     elif kind == "simulation_risk":
         simulation = simulate_payoffs(problem)
         risk = risk_from_simulation(simulation)
@@ -179,11 +335,23 @@ def solve_problem(problem: dict[str, Any]) -> dict[str, Any]:
     elif kind == "multi_objective":
         weighted = weighted_score(problem)
         result = {**weighted, "pareto": pareto_frontier(problem)}
+    elif kind == "game_theory":
+        result = solve_game_theory(problem)
+    elif kind == "queueing_theory":
+        result = solve_queueing_problem(problem)
+    elif kind == "network_modelling":
+        result = solve_network_modelling_problem(problem)
     elif kind == "inventory_theory":
-        from .inventory import solve_inventory_problem
-        result = solve_inventory_problem(problem)
+        result = solve_inventory_theory_problem(problem)
+    elif kind == "nonlinear_programming":
+        result = solve_nonlinear_programming_problem(problem)
+    elif kind == "integer_programming":
+        result = solve_integer_programming_problem(problem)
+    elif kind == "markov_processes":
+        result = solve_markov_processes_problem(problem)
     else:
         result = {"status": "needs_clarification", "missing_data": missing_data_questions(problem)}
+    result = attach_mermaid_if_needed(problem, result, kind)
 
     log_step(trail, "solver_execution", result.get("status"))
 
